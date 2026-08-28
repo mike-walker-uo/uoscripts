@@ -1,5 +1,7 @@
 This script will track the amount of spawned/killed special tameable pets and it's rarity version. On UOAlive some tameable pets have exotic, eqxuisite, rare and legadary versions. 
 
+[Changelog](CHANGELOG.md)
+
 Currently supported:
 Ki-Rin
 Nightmare
