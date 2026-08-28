@@ -12,10 +12,12 @@ from System.Collections.Generic import List
 # Configuration
 # ---------------------------------------------------------------------------
 
-TRACKER_VERSION = "1.3.0"
+TRACKER_VERSION = "1.3.1"
 SCAN_RANGE = 40
 REFRESH_MS = 1000
 SAVE_INTERVAL_MS = 10000
+BACKUP_INTERVAL_SECONDS = 3600
+BACKUP_RETENTION = 30
 RECENT_SERIAL_SECONDS = 86400
 LEGENDARY_ASSOCIATION_SECONDS = 60
 
@@ -31,6 +33,8 @@ try:
 except:
     SCRIPT_DIRECTORY = Misc.CurrentScriptDirectory()
 DATA_FILE = os.path.join(SCRIPT_DIRECTORY, "pet_hunt_tracker.json")
+BACKUP_DIRECTORY = os.path.join(
+    SCRIPT_DIRECTORY, "pet_hunt_tracker_backups")
 
 RARITIES = (
     ("normal", "Normal", 1150),
@@ -171,6 +175,7 @@ session_pet_seconds = dict((pet_key, 0.0) for pet_key in PET_KEYS)
 session_seconds = 0.0
 last_time_update = time.time()
 last_save_at = time.time()
+last_backup_at = 0.0
 session_seen_serials = set()
 pending_property_attempts = {}
 known_visible_serials = set()
@@ -223,6 +228,40 @@ def save_data():
         last_save_at = time.time()
     except Exception as error:
         Player.HeadMessage(33, "Pet tracker save failed: %s" % error)
+
+
+def backup_data(force=False):
+    global last_backup_at
+    now = time.time()
+    if not force and now - last_backup_at < BACKUP_INTERVAL_SECONDS:
+        return
+    if not os.path.exists(DATA_FILE):
+        return
+    try:
+        if not os.path.exists(BACKUP_DIRECTORY):
+            os.makedirs(BACKUP_DIRECTORY)
+        filename = "pet_hunt_tracker_%s.json" % time.strftime(
+            "%Y%m%d_%H%M%S")
+        destination = os.path.join(BACKUP_DIRECTORY, filename)
+        temporary = destination + ".tmp"
+        with open(DATA_FILE, "rb") as source_file:
+            contents = source_file.read()
+        with open(temporary, "wb") as backup_file:
+            backup_file.write(contents)
+        if os.path.exists(destination):
+            os.remove(destination)
+        os.rename(temporary, destination)
+
+        backups = sorted(
+            filename for filename in os.listdir(BACKUP_DIRECTORY)
+            if (filename.startswith("pet_hunt_tracker_") and
+                filename.endswith(".json")))
+        while len(backups) > BACKUP_RETENTION:
+            oldest = backups.pop(0)
+            os.remove(os.path.join(BACKUP_DIRECTORY, oldest))
+        last_backup_at = now
+    except Exception as error:
+        Player.HeadMessage(33, "Pet tracker backup failed: %s" % error)
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +744,8 @@ def scan_spawns():
 # Main
 # ---------------------------------------------------------------------------
 
+save_data()
+backup_data(True)
 Player.HeadMessage(68, "Pet Hunt Tracker v%s started" % TRACKER_VERSION)
 draw_main_gump()
 
@@ -718,6 +759,7 @@ try:
         scan_spawns()
         if time.time() - last_save_at >= SAVE_INTERVAL_MS / 1000.0:
             save_data()
+        backup_data()
         if options_open:
             draw_options_gump()
         else:
