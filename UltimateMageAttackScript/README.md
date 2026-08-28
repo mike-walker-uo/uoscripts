@@ -4,6 +4,7 @@ By Mike|Walker
 
 An all-in-one Razor Enhanced combat script for Mage, Mystic, Necromancer, Spellweaver, Bard, Tamer and summoner templates. It was mainly developed and tested on UOAlive, so shard rules, journal text and spell behavior may differ elsewhere.
 
+![Gump Script options](magescriptgump.png "Gump Script Options")
 ## Requirements
 
 - Razor Enhanced 0.8.2.215 or newer.
