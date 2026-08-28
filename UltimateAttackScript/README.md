@@ -4,4 +4,4 @@ It's an All-In-One attack script for Ultima Online Dexxer templates (Melee, Samp
 
 The gump script is used to set the attack options. Once you have set and saved all option you only need the gump script when you want to change the settings.
 
-
+![alt text](https://github.com/mike-walker-uo/uoscripts/blob/main/UltimateAttackScript/attackscriptgump.png "Gump Script Options:")
