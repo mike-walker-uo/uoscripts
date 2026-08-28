@@ -4,6 +4,8 @@ By Mike|Walker
 
 An all-in-one Razor Enhanced combat script for melee, Sampire, Ninja, Archer, Thrower, pet and summon templates. It was mainly tested on UOAlive, so some spell names, item properties or context-menu entries may need adjustment on other shards.
 
+Version history: [CHANGELOG.md](CHANGELOG.md)
+
 ![Gump Script options](attackscriptgump.png "Gump Script Options")
 
 ## Requirements
