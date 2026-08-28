@@ -1,5 +1,13 @@
 ### Standalone pet hunt tracker by Mike|Walker for Razor Enhanced / UOAlive
 
+# Changelog
+# 1.3.2 - Added inline changelog.
+# 1.3.1 - Added startup/hourly stats backups with 30-file retention.
+# 1.3.0 - Added collapsible rows, compact metrics, and single-pet mini view.
+# 1.2.0 - Added persistent per-pet rarity switches.
+# 1.1.0 - Added Tsuki Wolf plus spawn chance, amount, and time averages.
+# 1.0.0 - Initial standalone multi-pet hunt tracker.
+
 import json
 import os
 import time
@@ -12,7 +20,7 @@ from System.Collections.Generic import List
 # Configuration
 # ---------------------------------------------------------------------------
 
-TRACKER_VERSION = "1.3.1"
+TRACKER_VERSION = "1.3.2"
 SCAN_RANGE = 40
 REFRESH_MS = 1000
 SAVE_INTERVAL_MS = 10000
