@@ -24,6 +24,7 @@ All notable HuntTracker changes are documented here.
 - Persistent session history, personal bests, and rolling seven-session comparisons.
 - Full UTF-8 JSON, encounter CSV, and per-monster CSV exports.
 - Eleven offline regression tests.
+- README screenshots for the Overview, Monsters, Loot, and Records gump pages.
 
 ### Fixed
 
