@@ -1,0 +1,61 @@
+{
+  "tracking": {
+    "tick_ms": 250,
+    "gump_refresh_ms": 1000,
+    "mobile_range": 20,
+    "notorieties": [3, 4, 5, 6],
+    "ignore_pets": true,
+    "check_line_of_sight": false,
+    "exclude_humans": false,
+    "ignored_names": [],
+    "damage_mode": "player",
+    "missing_grace_seconds": 2.5,
+    "kill_confirmation": "balanced",
+    "recent_damage_seconds": 3.0,
+    "combat_timeout_seconds": 5.0,
+    "location_grid_size": 32
+  },
+  "ui": {
+    "x": 100,
+    "y": 100,
+    "compact": false,
+    "page": "overview",
+    "remember_position": true,
+    "top_monsters": 10,
+    "recent_kills": 5
+  },
+  "goals": {
+    "kills": 0,
+    "gold": 0,
+    "duration_minutes": 0
+  },
+  "alerts": {
+    "enabled": true,
+    "sound": true,
+    "sound_id": 85,
+    "weight_percent": 90,
+    "gold_capacity": 0,
+    "gold_capacity_warning_percent": 90,
+    "durability_minimum": 20,
+    "durability_check_seconds": 30
+  },
+  "loot": [
+    {
+      "name": "Gold",
+      "item_id": 3821,
+      "hue": -1,
+      "unit_value": 1,
+      "use_player_gold": true
+    }
+  ],
+  "persistence": {
+    "checkpoint_seconds": 15,
+    "resume_interrupted_session": true,
+    "maximum_resume_age_hours": 12,
+    "auto_save_on_death": true,
+    "auto_save_on_disconnect": true,
+    "save_on_stop": true,
+    "save_on_reset": false,
+    "history_limit": 100
+  }
+}
