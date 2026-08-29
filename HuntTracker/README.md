@@ -30,6 +30,24 @@ Version: **1.0.0**
 - JSON session archive plus correctly quoted UTF-8 encounter and monster CSV files.
 - Persistent personal bests and rolling seven-session comparisons.
 
+## Screenshots
+
+### Overview
+
+![HuntTracker overview showing session totals and the current encounter](gump1.png)
+
+### Monsters
+
+![HuntTracker monster statistics with kills, kill time, DPS, and damage](gump2.png)
+
+### Loot
+
+![HuntTracker configured loot counts and estimated value](gump3.png)
+
+### Records
+
+![HuntTracker personal bests and rolling seven-session comparison](gump4.png)
+
 ## Files
 
 | File | Purpose |
