@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.32 last edit 28.08.2026 ###
+### Version 1.33 last edit 05.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -39,6 +39,7 @@ SETTINGS_KEYS = [
     "use_dresslist", "dresslist_name",
     "use_arcanefocus", "use_summonfeys", "fey_threshold",
     "use_immolatingweapon", "use_attuneweapon", "use_thunderstorm",
+    "use_df_lowstam", "df_stam_threshold",
     "use_eoo", "use_df", "use_cw", "use_holylight", "use_honor", "use_ca",
     "use_removecurse", "use_removepoison", "use_closewounds",
     "use_confidence", "use_evasion",
@@ -250,6 +251,8 @@ Misc.SetSharedValue("dresslist_name","")
     
 Misc.SetSharedValue("use_eoo",0) # Use Chiv Enemy of One - dangerous!
 Misc.SetSharedValue("use_df",0) # Use Chiv Divine Fury
+Misc.SetSharedValue("use_df_lowstam",0) # Opt in to Divine Fury below stamina threshold
+Misc.SetSharedValue("df_stam_threshold",180) # Absolute stamina threshold
 Misc.SetSharedValue("use_cw",0) # Use Chiv Consecrate Weapon
 Misc.SetSharedValue("use_holylight",0) # Use Chiv Holy Light with 2+ mobs within 3 tiles
 Misc.SetSharedValue("use_honor",1) # Use Honor.. can be used without Bushido
@@ -438,6 +441,7 @@ mobileIDsToIgnore = {
 ##################################################################
 
 use_honor_fix = 0 #clear Honor if its still exiting without mobs around
+_pending_honor_target = None
 Misc.SetSharedValue("use_bandages",0) #will be automatically actived when you have healing or vet
 Misc.SetSharedValue("use_vampiricembrace",0) #will be automatically actived when you have 99+ Necro
 Misc.SetSharedValue("use_arrows",0) #will be automatically activated when you have archery
@@ -464,6 +468,14 @@ _smoke_bomb_cache_serial = 0
 _enchanted_apple_cache_serial = 0
 _bag_of_sending_cache_serial = 0
 _artifact_name_cache = {}
+_artifact_scan_queue = []
+_artifact_move_queue = []
+_heirloom_candidate_queue = []
+_heirloom_drop_queue = []
+_heirloom_drop_state = None
+_pending_potions = {}
+_pending_apple = None
+_mirror_release_candidates = []
 firsthitmob = 0 #used for onslaught
 guardme = 0 #used for summon feys
 weapon_set = 'default' #used for weapon check
@@ -502,6 +514,8 @@ def refresh_sv():
     sv['honordistance']          = Misc.ReadSharedValue("honordistance")
     sv['use_messages']           = Misc.ReadSharedValue("use_messages")
     sv['use_df']                 = Misc.ReadSharedValue("use_df")
+    sv['use_df_lowstam']         = Misc.ReadSharedValue("use_df_lowstam")
+    sv['df_stam_threshold']      = Misc.ReadSharedValue("df_stam_threshold")
     sv['use_cw']                 = Misc.ReadSharedValue("use_cw")
     sv['use_holylight']          = Misc.ReadSharedValue("use_holylight")
     sv['use_eoo']                = Misc.ReadSharedValue("use_eoo")
@@ -613,7 +627,6 @@ weapons = {
     'shortspear': Weapon('Short Spear', 0x1403, "Shadow Strike", "Mortal Strike", "secondary", "secondary"),
     'gargishdagger': Weapon('Gargish Dagger', 0x0902, "Shadow Strike", "Infectious Strike", "secondary", "secondary"),
     'skinningknife': Weapon('Skinning Knife', 0x0EC4, "Shadow Strike", "Bleed Attack", "secondary", "secondary"),
-    'cutlass': Weapon('Cutlass', 0x1441, "Bleed Attack", "Shadow Strike", "primary", "primary"),
     'compositebow': Weapon( 'Composite Bow', 0x26C2, "Armor Ignore", None, "primary", "primary", 8),
     'soulglaive': Weapon( 'Soul Glaive', 0x090A, "Armor Ignore", None, "primary", "primary", 6),
     'repeatingcrossbow': Weapon( 'Repeating Crossbow', 0x26C3, "Double Shot", None, "primary", "primary", 8),
@@ -716,6 +729,12 @@ Player.HeadMessage(40,"Dont forget to start the GUMP script")
 equippedweapon = Player.GetItemOnLayer('FirstValid')
 if not equippedweapon:
     equippedweapon = Player.GetItemOnLayer('LeftHand')
+_last_equipped_weapon_serial = equippedweapon.Serial if equippedweapon else 0
+_right_hand = Player.GetItemOnLayer('RightHand')
+_last_equipped_weapon_layer = ('RightHand' if equippedweapon and _right_hand
+                               and _right_hand.Serial == equippedweapon.Serial else 'LeftHand')
+_other_hand = Player.GetItemOnLayer('LeftHand' if _last_equipped_weapon_layer == 'RightHand' else 'RightHand')
+_last_other_hand_serial = _other_hand.Serial if _other_hand else 0
 
 if equippedweapon:
     weapon_set = _weapon_key_by_item_id.get(equippedweapon.ItemID, 'default')
@@ -894,6 +913,27 @@ def _current_weapon():
     if not w:
         w = Player.GetItemOnLayer('LeftHand')
     return w
+
+def reequip_last_weapon():
+    global _last_equipped_weapon_serial, _last_equipped_weapon_layer, _last_other_hand_serial
+    other_layer = 'LeftHand' if _last_equipped_weapon_layer == 'RightHand' else 'RightHand'
+    other = Player.GetItemOnLayer(other_layer)
+    hand = Player.GetItemOnLayer(_last_equipped_weapon_layer)
+    if hand:
+        _last_equipped_weapon_serial = hand.Serial
+        _last_other_hand_serial = other.Serial if other else 0
+        return
+    if other and (not _last_equipped_weapon_serial or other.Serial != _last_other_hand_serial):
+        _last_equipped_weapon_serial = other.Serial
+        _last_equipped_weapon_layer = other_layer
+        _last_other_hand_serial = 0
+        return
+    if not _last_equipped_weapon_serial or Timer.Check('disarm_reequip'):
+        return
+    item = Items.FindBySerial(_last_equipped_weapon_serial)
+    if item and item.Container == Player.Backpack.Serial:
+        Timer.Create('disarm_reequip', 1000)
+        Player.EquipItem(item.Serial)
 
 def _slayer_equip(entry, is_weapon):
     ser = entry.get('serial', 0)
@@ -1175,6 +1215,23 @@ def clear_stuck_target_cursor():
     Player.HeadMessage(68, "Cleared stuck target cursor")
     
             
+def complete_pending_honor():
+    global _pending_honor_target, use_honor_fix
+    if _pending_honor_target is None:
+        return
+    if sv['activeattack'] != 1:
+        _pending_honor_target = None
+        return
+    if Target.HasTarget():
+        Target.TargetExecute(_pending_honor_target)
+        if Timer.Check('spamhonor') == False and sv['use_messages'] == 1:
+            Player.HeadMessage(55, "Honor mob: {}".format(_pending_honor_target.Name))
+            Timer.Create('spamhonor', 1500)
+        _pending_honor_target = None
+        use_honor_fix = 0
+    elif Timer.Check('honor_cursor') == False:
+        _pending_honor_target = None
+
 def dresslist(): 
     if sv['use_dresslist'] == 1:
         name = str(sv['dresslist_name'] or "").strip()
@@ -1235,40 +1292,68 @@ def onslaught(nearest):
         Timer.Create('blockspecials',1300)
         Misc.Pause(100)
 
+def use_potion(pot, cooldown):
+    _pending_potions[cooldown] = (pot.Serial, pot.Amount)
+    Timer.Create(cooldown + '_confirm', 1000)
+    Timer.Create(cooldown + '_retry', 3000)
+    Items.UseItem(pot)
+
+
 def auto_potion():
     # Non-spell quaff — pots do NOT break swing rhythm or VE leech.
     # Each branch is gated on its own cooldown timer.
     # One pot per tick: first match returns to avoid stacking pauses.
 
+    # Confirm consumption on later ticks without blocking combat.
+    for cooldown, (serial, amount) in list(_pending_potions.items()):
+        remaining = Items.FindBySerial(serial)
+        if remaining is None or remaining.Deleted or remaining.Amount < amount:
+            Timer.Create(cooldown, 10500)
+            del _pending_potions[cooldown]
+        elif Timer.Check(cooldown + '_retry') == False:
+            del _pending_potions[cooldown]
+
     # 1) Greater Refresh — stam recovery (archer swing-speed lifeline)
-    if sv['use_pot_refresh'] == 1 and Timer.Check('pot_refresh') == False:
+    if (sv['use_pot_refresh'] == 1 and Timer.Check('pot_refresh') == False
+            and Timer.Check('pot_refresh_retry') == False):
         pct = float(sv['stam_pot_pct']) / 100.0
         if Player.StamMax > 0 and Player.Stam < Player.StamMax * pct:
-            pot = Items.FindByID(0x0F0B, -1, Player.Backpack.Serial, -1, True)
+            pot = None
+            if Timer.Check('pot_refresh_missing') == False:
+                pot = Items.FindByID(0x0F0B, -1, Player.Backpack.Serial, -1, True)
             if pot:
-                Items.UseItem(pot)
-                Timer.Create('pot_refresh', 10500)
+                use_potion(pot, 'pot_refresh')
                 return
+            if Timer.Check('pot_refresh_missing') == False:
+                Timer.Create('pot_refresh_missing', 1000)
 
     # 2) Greater Cure — poisoned with no Chiv mana for Cleanse by Fire
-    if sv['use_pot_cure'] == 1 and Timer.Check('pot_cure') == False:
+    if (sv['use_pot_cure'] == 1 and Timer.Check('pot_cure') == False
+            and Timer.Check('pot_cure_retry') == False):
         if Player.Poisoned and Player.Mana < (10 - (10 * lmc)):
-            pot = Items.FindByID(0x0F07, -1, Player.Backpack.Serial, -1, True)
+            pot = None
+            if Timer.Check('pot_cure_missing') == False:
+                pot = Items.FindByID(0x0F07, -1, Player.Backpack.Serial, -1, True)
             if pot:
-                Items.UseItem(pot)
-                Timer.Create('pot_cure', 10500)
+                use_potion(pot, 'pot_cure')
                 return
+            if Timer.Check('pot_cure_missing') == False:
+                Timer.Create('pot_cure_missing', 1000)
 
     # 3) Emergency Heal pot — last-resort fallback at very low HP
     # Pots are NOT spells -> doesn't violate VE rule (no spell-heal in combat).
-    if sv['use_pot_heal_emergency'] == 1 and Timer.Check('pot_heal') == False:
+    if (sv['use_pot_heal_emergency'] == 1 and Timer.Check('pot_heal') == False
+            and Timer.Check('pot_heal_retry') == False):
         pct = float(sv['heal_pot_pct']) / 100.0
         if Player.HitsMax > 0 and Player.Hits < Player.HitsMax * pct:
-            pot = Items.FindByID(0x0F0C, -1, Player.Backpack.Serial, -1, True)
+            pot = None
+            if Timer.Check('pot_heal_missing') == False:
+                pot = Items.FindByID(0x0F0C, -1, Player.Backpack.Serial, -1, True)
             if pot:
-                Items.UseItem(pot)
-                Timer.Create('pot_heal', 10500)
+                use_potion(pot, 'pot_heal')
                 return
+            if Timer.Check('pot_heal_missing') == False:
+                Timer.Create('pot_heal_missing', 1000)
 
 def sync_pet_target(nearest):
     # Pet/summon attack sync — "all kill" issued only when target swaps.
@@ -1285,11 +1370,15 @@ def sync_pet_target(nearest):
         return
     if Timer.Check('pet_sync') != False:
         return
+    if Target.HasTarget():
+        return
+    Timer.Create('pet_sync', 2000)
     Player.ChatSay("all kill")
-    Target.WaitForTarget(1500, True)
+    Target.WaitForTarget(300, True)
+    if not Target.HasTarget():
+        return
     Target.TargetExecute(nearest.Serial)
     _last_pet_target_serial = nearest.Serial
-    Timer.Create('pet_sync', 2000)
 
 def pick_target(victims_dist):
     # Score-based target picker. Higher score wins.
@@ -1416,6 +1505,21 @@ def curseweapon():
             Timer.Create('spells',calc_castspeed(1000) + _cached_castpause)
 
 def checkbloodoath():
+    global _pending_apple
+
+    if _pending_apple is not None:
+        serial, amount = _pending_apple
+        remaining = Items.FindBySerial(serial)
+        consumed = ((remaining is None or remaining.Deleted) and amount == 1)
+        if remaining is not None and not remaining.Deleted:
+            consumed = remaining.Amount < amount
+        if consumed:
+            Timer.Create('pot_apple', 60000)
+            _pending_apple = None
+        elif Timer.Check('pot_apple_confirm') == False:
+            _pending_apple = None
+            blood_oath_apple_warning("Enchanted Apple not consumed; retrying")
+
     if Player.BuffsExist('Bload Oath (curse)'):
         Player.HeadMessage(40,"Blood Oath! RUN!")
         Player.HeadMessage(40,"Blood Oath! RUN!")
@@ -1427,14 +1531,16 @@ def checkbloodoath():
             blood_oath_apple_warning("Enchanted Apples disabled")
         elif Timer.Check('pot_apple') != False:
             blood_oath_apple_warning("Enchanted Apple cooldown")
-        else:
+        elif _pending_apple is None and Timer.Check('pot_apple_retry') == False:
             apple = find_enchanted_apple()
             if apple:
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(80,"Enchanted Apple!")
+                # Throttle rejected requests without assuming the apple was eaten.
+                Timer.Create('pot_apple_retry', 3000)
+                Timer.Create('pot_apple_confirm', 1000)
+                _pending_apple = (apple.Serial, apple.Amount)
                 Items.UseItem(apple)
-                Timer.Create('pot_apple', 60000)
-                Misc.Pause(1000)
                 if not Player.BuffsExist('Bload Oath (curse)'):
                     return
             else:
@@ -1518,6 +1624,16 @@ def item_is_in_backpack(item):
             return False
         current = Items.FindBySerial(container_serial)
     return False
+
+
+def item_container_serial(item):
+    if not item:
+        return 0
+    container = item.Container
+    try:
+        return container.Serial
+    except:
+        return container
 
 
 def select_lootbag(prompt):
@@ -1608,60 +1724,80 @@ def find_enchanted_apple():
 
 
 def drop_heirloom_chests():
-    if Timer.Check("heirloomdrop") != False:
+    global _heirloom_drop_state
+
+    if Timer.Check("heirloomdrop") == False:
+        Timer.Create("heirloomdrop", 10000)
+        items = backpack_items_except(Player.Backpack, 0)
+        _heirloom_candidate_queue[:] = [
+            item.Serial for item in items
+            if item.ItemID == HEIRLOOM_CHEST_ID and item.Hue == HEIRLOOM_CHEST_HUE
+        ]
+
+    # Resolve at most one candidate name per tick. A same-ID decoy must not
+    # prevent a later real Chest of Heirlooms from being considered.
+    if _heirloom_candidate_queue:
+        serial = _heirloom_candidate_queue.pop(0)
+        item = Items.FindBySerial(serial)
+        if (item and not item.Deleted and item_is_in_backpack(item) and
+                cached_item_name(item, _artifact_name_cache) == HEIRLOOM_CHEST_NAME):
+            _heirloom_drop_queue.append(serial)
+
+    if Timer.Check('heirloom_drop_action') != False:
         return
-    Timer.Create("heirloomdrop", 10000)
 
-    # Filter natively by graphic/hue instead of walking every backpack item.
-    checked = set()
-    while True:
-        item = Items.FindByID(
-            HEIRLOOM_CHEST_ID,
-            HEIRLOOM_CHEST_HUE,
-            Player.Backpack.Serial,
-            True,
-            False
-        )
-        if not item or item.Serial in checked:
-            return
-        checked.add(item.Serial)
-
-        name = item.Name
-        if not name:
-            Items.WaitForProps(item.Serial, 500)
-            refreshed = Items.FindBySerial(item.Serial)
-            name = refreshed.Name if refreshed else None
-        if not name or str(name).strip().lower() != HEIRLOOM_CHEST_NAME:
-            return
-
-        serial = item.Serial
-        for dx, dy in HEIRLOOM_DROP_OFFSETS:
-            Items.MoveOnGround(
-                item, 0,
-                Player.Position.X + dx,
-                Player.Position.Y + dy,
-                Player.Position.Z
-            )
-            Misc.Pause(600)
-            moved = Items.FindBySerial(serial)
-            if moved is None or moved.Container is None or moved.Container == 0:
-                if sv['use_messages'] == 1:
-                    Player.HeadMessage(68, "Dropped Chest of Heirlooms")
-                break
-        else:
+    if _heirloom_drop_state is not None:
+        serial, offset_index = _heirloom_drop_state
+        moved = Items.FindBySerial(serial)
+        if moved is None or moved.Deleted or not item_container_serial(moved):
+            if sv['use_messages'] == 1:
+                Player.HeadMessage(68, "Dropped Chest of Heirlooms")
+            _heirloom_drop_state = None
+        elif offset_index >= len(HEIRLOOM_DROP_OFFSETS):
             Player.HeadMessage(30, "Could not drop Chest of Heirlooms")
+            _heirloom_drop_state = None
+        elif not item_is_in_backpack(moved):
+            _heirloom_drop_state = None
+
+    if _heirloom_drop_state is None:
+        while _heirloom_drop_queue:
+            serial = _heirloom_drop_queue.pop(0)
+            item = Items.FindBySerial(serial)
+            if item and not item.Deleted and item_is_in_backpack(item):
+                _heirloom_drop_state = (serial, 0)
+                break
+        if _heirloom_drop_state is None:
             return
+
+    serial, offset_index = _heirloom_drop_state
+    item = Items.FindBySerial(serial)
+    if (not item or item.Deleted or not item_is_in_backpack(item) or
+            item.ItemID != HEIRLOOM_CHEST_ID or item.Hue != HEIRLOOM_CHEST_HUE or
+            cached_item_name(item, _artifact_name_cache) != HEIRLOOM_CHEST_NAME):
+        _heirloom_drop_state = None
+        return
+    dx, dy = HEIRLOOM_DROP_OFFSETS[offset_index]
+    Items.MoveOnGround(item, 0, Player.Position.X + dx,
+                       Player.Position.Y + dy, Player.Position.Z)
+    _heirloom_drop_state = (serial, offset_index + 1)
+    Timer.Create('heirloom_drop_action', 600)
 
 
 def move_artifacts_to_lootbag():
-    if sv['use_move_artis'] != 1 or Timer.Check("artifactmove") != False:
+    if sv['use_move_artis'] != 1:
+        del _artifact_scan_queue[:]
+        del _artifact_move_queue[:]
         return
-    Timer.Create("artifactmove", 10000)
+
+    scan_due = Timer.Check("artifactmove") == False
+    if not scan_due and not _artifact_scan_queue and not _artifact_move_queue:
+        return
 
     lootbag = Items.FindBySerial(sv['lootbag_serial'])
     if lootbag and not item_is_in_backpack(lootbag):
         lootbag = None
     if not lootbag:
+        del _artifact_move_queue[:]
         if Timer.Check("lootbagprompt") != False:
             return
         Timer.Create("lootbagprompt", 10000)
@@ -1669,19 +1805,41 @@ def move_artifacts_to_lootbag():
         if not lootbag:
             return
 
-    items = backpack_items_except(Player.Backpack, lootbag.Serial)
-    live_serials = {item.Serial for item in items}
-    for serial in list(_artifact_name_cache):
-        if serial not in live_serials:
-            del _artifact_name_cache[serial]
+    # Do not restart a scan while its item queue is still being processed.
+    # Otherwise a large backpack can reset the queue every ten seconds and
+    # starve artifacts near the end of the scan indefinitely.
+    if (scan_due and not _artifact_scan_queue and
+            not _artifact_move_queue):
+        Timer.Create("artifactmove", 10000)
+        items = backpack_items_except(Player.Backpack, lootbag.Serial)
+        live_serials = {item.Serial for item in items}
+        for serial in list(_artifact_name_cache):
+            if serial not in live_serials:
+                del _artifact_name_cache[serial]
+        _artifact_scan_queue[:] = [item.Serial for item in items]
 
-    for item in items:
-        name = cached_item_name(item, _artifact_name_cache)
-        if name in ARTIFACT_NAMES:
-            Items.Move(item, lootbag.Serial, -1)
-            if sv['use_messages'] == 1:
-                Player.HeadMessage(68, "Move artifact: %s" % name)
-            Misc.Pause(600)
+    # Property discovery can block up to 500ms: do at most one per tick.
+    if _artifact_scan_queue:
+        serial = _artifact_scan_queue.pop(0)
+        item = Items.FindBySerial(serial)
+        if (item and not item.Deleted and item_is_in_backpack(item) and
+                item_container_serial(item) != lootbag.Serial and
+                cached_item_name(item, _artifact_name_cache) in ARTIFACT_NAMES):
+            _artifact_move_queue.append(serial)
+
+    if Timer.Check('artifact_move_action') != False:
+        return
+    while _artifact_move_queue:
+        serial = _artifact_move_queue.pop(0)
+        item = Items.FindBySerial(serial)
+        if (serial == lootbag.Serial or not item_is_in_backpack(item)
+                or item_container_serial(item) == lootbag.Serial):
+            continue
+        Items.Move(item, lootbag.Serial, -1)
+        Timer.Create('artifact_move_action', 600)
+        if sv['use_messages'] == 1:
+            Player.HeadMessage(68, "Move artifact: %s" % _artifact_name_cache.get(serial, 'artifact'))
+        return
 
 
 def check_vamp():
@@ -1769,17 +1927,17 @@ def evasion():
             Timer.Create('spells',calc_castspeed_chiv_sw(250) + _cached_castpause)
             Timer.Create('evasion',20000)               
                 
-_DF_STAM_THRESHOLD = 180
-
 def divinefury_lowstam():
-    # Auto Divine Fury whenever stamina is low, even when not cursed.
+    # Opt-in Divine Fury whenever stamina is below the configured threshold.
+    if sv.get('use_df_lowstam') != 1:
+        return
     if Player.BuffsExist('Divine Fury'):
         return
     if Timer.Check('spells') != False or Player.Paralized:
         return
     if Player.Mana < (15 - (15 * lmc)):
         return
-    if Player.Stam < _DF_STAM_THRESHOLD:
+    if Player.Stam < sv['df_stam_threshold']:
         if sv.get('use_messages') == 1:
             Player.HeadMessage(80,"Divine Fury!")
         Spells.CastChivalry('Divine Fury')
@@ -1855,28 +2013,34 @@ def release_one_mirror_image(has_nearby_mobs):
     if Player.Followers != 4 or Timer.Check('mirror_release') != False:
         return
 
-    Timer.Create('mirror_release', 3000)
-    fil = Mobiles.Filter()
-    fil.Enabled = True
-    # Images can follow outside a melee character's short AttackRange.
-    fil.RangeMax = max(12, sv['attackrange'])
-    fil.CheckIgnoreObject = False
-    fil.IgnorePets = False
-    copies = Mobiles.ApplyFilter(fil)
+    if not _mirror_release_candidates:
+        fil = Mobiles.Filter()
+        fil.Enabled = True
+        # Images can follow outside a melee character's short AttackRange.
+        fil.RangeMax = max(12, sv['attackrange'])
+        fil.CheckIgnoreObject = False
+        fil.IgnorePets = False
+        _mirror_release_candidates[:] = [mob.Serial for mob in Mobiles.ApplyFilter(fil)
+                                         if mob is not None]
 
-    for mob in copies:
-        if mob is None or mob.Deleted or mob.Serial == Player.Serial:
-            continue
-        if mob.Name != Player.Name or mob.MobileID != Player.MobileID:
-            continue
-
+    if _mirror_release_candidates:
+        serial = _mirror_release_candidates.pop(0)
+        mob = Mobiles.FindBySerial(serial)
+        if (mob is None or mob.Deleted or mob.Serial == Player.Serial or
+                mob.Name != Player.Name or mob.MobileID != Player.MobileID):
+            return
         contexts = Misc.WaitForContext(mob.Serial, 750) or []
         for context in contexts:
             if str(context.Entry).strip().lower() == "release":
-                Misc.ContextReply(mob.Serial, context.Response)
-                if sv['use_messages'] == 1:
-                    Player.HeadMessage(68, "Released one Mirror Image")
+                # Revalidate conditions after waiting for context.
+                if has_nearby_mobs and Player.Followers == 4:
+                    Misc.ContextReply(mob.Serial, context.Response)
+                    Timer.Create('mirror_release', 3000)
+                    del _mirror_release_candidates[:]
+                    if sv['use_messages'] == 1:
+                        Player.HeadMessage(68, "Released one Mirror Image")
                 return
+        return
 
 def checkwhitetigerform():
     if sv['use_whitetigerform'] != 1:
@@ -2325,6 +2489,10 @@ def prearm_weaponspecial():
     # Self-gates so it never fights the in-melee rotation or a readied Onslaught.
     if sv['activeattack'] != 1:
         return
+    if Player.BuffsExist('Bload Oath (curse)'):
+        if Player.HasSpecial:
+            Player.WeaponClearSA()
+        return
     if selected_ninjitsu_attack() is not None:
         arm_ninjitsu_attack()
         return
@@ -2372,6 +2540,7 @@ def fighting(nearest, victims_6, victims_10, nearby_enemies, attackrange_enemy_c
         if Player.WarMode:
             Player.SetWarMode(False)
         if attackrange_enemy_count <= 2 or sv['disable_weaponspecials'] == 1:
+            Player.WeaponClearSA()
             return
 
         whirlwind_slot = None
@@ -2580,7 +2749,8 @@ def fighting(nearest, victims_6, victims_10, nearby_enemies, attackrange_enemy_c
  
             elif (not ninjitsu_mode and
                     not weapon_special_active_or_pending() and
-                    Player.Mana < required_special_mana and
+                    (sv['disable_weaponspecials'] == 1 or
+                     Player.Mana < required_special_mana) and
                     sv['use_momentumstrike'] == 1 and
                     not Player.BuffsExist('Momentum Strike') and
                     Player.Mana >= (10 - (10 * lmc))):
@@ -2603,14 +2773,23 @@ def fighting(nearest, victims_6, victims_10, nearby_enemies, attackrange_enemy_c
 _IDLE_PAUSE_EXTRA = 250
 
 def run_tick():
-    global use_honor_fix, _victims_cache, _changelings_cache
+    global use_honor_fix, _pending_honor_target, _victims_cache, _changelings_cache
 
     # Attack Off is a safety control: do not wait for the 2.5s settings refresh.
     sv['activeattack'] = Misc.ReadSharedValue("activeattack")
 
+    if Timer.Check("sv_refresh") == False:
+        refresh_sv()
+        legendarycheck()
+        Timer.Create("sv_refresh", 2500)
+
+    if sv['activeattack'] == 1:
+        reequip_last_weapon()
+
     track_weapon_special_state()
     track_backstab_execution()
     clear_stuck_target_cursor()
+    complete_pending_honor()
     if sv['activeattack'] == 1 and continue_hidden_backstab():
         Misc.Pause(100)
         return
@@ -2626,11 +2805,9 @@ def run_tick():
     castsummonfey()
     checkwhitetigerform()
     
-    if Timer.Check("sv_refresh") == False:
-        refresh_sv()
+    if Timer.Check('dress') == False:
         dresslist()
-        legendarycheck()
-        Timer.Create("sv_refresh", 2500)
+        Timer.Create('dress', 2500)
 
     drop_heirloom_chests()
     move_artifacts_to_lootbag()
@@ -2763,23 +2940,6 @@ def run_tick():
                     Mobiles.Message(nearest,28,"▼")
             Timer.Create('distancemarker', 300)
             
-        if sv['use_honor'] == 1:
-            if ((Player.BuffsExist('Honored') == False or use_honor_fix == 1) and
-                    Timer.Check('honorattempt') == False):
-                #Mobiles.WaitForStats(nearest,300)
-                if nearest.Hits == nearest.HitsMax and Player.DistanceTo(nearest) <= sv['honordistance']:
-                    #Target.ClearQueue()
-                    #Target.Cancel()
-                    Player.InvokeVirtue("Honor")
-                    Target.WaitForTarget(300, True)
-                    Target.TargetExecute(nearest)
-                    use_honor_fix = 0
-                    Timer.Create('honorattempt', 1000)
-                    
-                    if Timer.Check('spamhonor') == False and sv['use_messages'] == 1:  
-                        Player.HeadMessage(55,"Honor mob: {}".format(nearest.Name))
-                        Timer.Create('spamhonor',1500)
-                        
         # Approaching (not yet in melee) — pre-arm so the FIRST swing is a special.
         # In melee, fighting() owns the rotation.
         if Player.DistanceTo(nearest) > 1:
@@ -2787,6 +2947,19 @@ def run_tick():
 
         fighting(nearest, victims_6, victims_10, nearby_enemies, len(victims))
         playingtheodds()
+        if sv['use_honor'] == 1:
+            if ((Player.BuffsExist('Honored') == False or use_honor_fix == 1) and
+                    Timer.Check('honorattempt') == False):
+                honor_candidates = [(mob, distance) for mob, distance in victims_dist
+                                    if distance <= sv['honordistance'] and mob.Hits == mob.HitsMax]
+                if honor_candidates and _pending_honor_target is None and not Target.HasTarget():
+                    honor_target = min(honor_candidates, key=lambda md: md[1])[0]
+                    _pending_honor_target = honor_target
+                    Timer.Create('honor_cursor', 1000)
+                    Timer.Create('honorattempt', 1000)
+                    Player.InvokeVirtue("Honor")
+                    complete_pending_honor()
+
         Misc.Pause(100)
             
     else:

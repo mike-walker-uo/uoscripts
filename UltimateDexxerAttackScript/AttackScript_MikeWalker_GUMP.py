@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.32 last edit 28.08.2026 ###
+### Version 1.33 last edit 05.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -27,6 +27,7 @@ SLAYER_TOGGLE_TALISMAN = 910021
 SLAYER_WEAPON_ROW = 911000
 SLAYER_TALISMAN_ROW = 912000
 DRESS_NAME_ENTRY = 920001
+DF_STAM_ENTRY = 920002
 
 _active_tab = 'settings'
 _slayer_delmode = False
@@ -58,6 +59,7 @@ SETTINGS_KEYS = [
     "use_dresslist", "dresslist_name",
     "use_arcanefocus", "use_summonfeys", "fey_threshold",
     "use_immolatingweapon", "use_attuneweapon", "use_thunderstorm",
+    "use_df_lowstam", "df_stam_threshold",
     "use_eoo", "use_df", "use_cw", "use_holylight", "use_honor", "use_ca",
     "use_removecurse", "use_removepoison", "use_closewounds",
     "use_confidence", "use_evasion",
@@ -294,6 +296,23 @@ class Sharedvalue:
 def SetSharedValue(sharedvalue):
     val = Misc.ReadSharedValue(sharedvalue)
     Misc.SetSharedValue(sharedvalue, 0 if val == 1 else 1)
+
+def toggle_df_lowstam(sharedvalue):
+    SetSharedValue(sharedvalue)
+    save_settings()
+
+
+def save_df_stam_threshold(gump_data):
+    try:
+        threshold = int(str(Gumps.GetTextByID(gump_data, DF_STAM_ENTRY) or "").strip())
+        if threshold < 1:
+            raise ValueError()
+    except (ValueError, TypeError):
+        Player.HeadMessage(30, "DF stamina threshold must be a positive whole number")
+        return
+    Misc.SetSharedValue("df_stam_threshold", threshold)
+    save_settings()
+
 
 def SetNinjitsuAttack(sharedvalue):
     val = Misc.ReadSharedValue(sharedvalue)
@@ -636,6 +655,23 @@ sections = {
                 'task':SetSharedValue,
                 'tooltip':"this feature will cast / check for Divine Fury before you attack mobs",
                 },
+                'DF Low Stam':
+                {
+                'buttontype':"setsharedvalue",
+                'skillCheck':'Chivalry',
+                'skillValue':25,
+                'sharedvalue':"use_df_lowstam",
+                'task':toggle_df_lowstam,
+                'tooltip':"Opt in to Divine Fury when stamina is below the saved threshold. Independent of DivineFury before attacks.",
+                },
+                'DF Stam Threshold':
+                {
+                'buttontype':"dfstamthreshold",
+                'skillCheck':'Chivalry',
+                'skillValue':25,
+                'entryid':DF_STAM_ENTRY,
+                'tooltip':"Absolute stamina threshold: cast only below this positive whole number. Click Save to apply.",
+                },
                 'ConsWeap':
                 {
                 'buttontype':"setsharedvalue",
@@ -724,7 +760,7 @@ sections = {
                 'skillValue':70,
                 'sharedvalue':"use_momentumstrike",
                 'task':SetSharedValue,
-                'tooltip':"Low-mana fallback for multiple mobs. Weapon specials always have priority; never replaces an active or pending weapon special.",
+                'tooltip':"Use Momentum Strike against multiple mobs when Weapon Specials Off is active. With weapon specials enabled, use it only as the low-mana fallback. Never replaces an active or pending weapon special.",
                 },
                 'LightningStrike':
                 {
@@ -980,7 +1016,7 @@ def calc_section_height(title, actions):
     col = 0
     for action in validActions:
         is_fullrow = (action['displayvalue'] or
-                      action['buttontype'] in ('savesettings', 'dresslistname'))
+                      action['buttontype'] in ('savesettings', 'dresslistname', 'dfstamthreshold'))
         if is_fullrow:
             if not first_item:
                 increments += 20
@@ -1056,7 +1092,7 @@ def buildSection(gd, title, sy, actions, sectionhue, titleX=0):
     for action in validActions:
         btype      = action.get('buttontype', '')
         is_fullrow = ('displayvalue' in action or
-                      btype in ('savesettings', 'dresslistname'))
+                      btype in ('savesettings', 'dresslistname', 'dfstamthreshold'))
 
         if is_fullrow:
             if not first_item:
@@ -1082,6 +1118,16 @@ def buildSection(gd, title, sy, actions, sectionhue, titleX=0):
                 Gumps.AddLabel(gd, 25, actionY, 68, action['_key'])
                 if 'tooltip' in action:
                     Gumps.AddTooltip(gd, str(action['tooltip']))
+
+            elif btype == 'dfstamthreshold':
+                current_threshold = str(Misc.ReadSharedValue("df_stam_threshold"))
+                Gumps.AddLabel(gd, 5, actionY, 900, "DF Stam <:")
+                Gumps.AddTextEntry(gd, 75, actionY, 135, 20, 88,
+                                   action['entryid'], current_threshold)
+                Gumps.AddTooltip(gd, str(action['tooltip']))
+                Gumps.AddButton(gd, 220, actionY, 9762, 9763,
+                                action['actionId'], 1, 0)
+                Gumps.AddLabel(gd, 240, actionY, 68, "Save")
 
             else:   # dresslistname
                 current_name = str(Misc.ReadSharedValue("dresslist_name") or "")
@@ -1339,6 +1385,9 @@ def buttoncheck(gumpId):
                 Misc.SetSharedValue("use_move_artis", 1)
                 save_settings()
                 Player.HeadMessage(68, "Move artifacts to loot bag: ON")
+
+    elif btype == 'dfstamthreshold':
+        save_df_stam_threshold(gd)
 
     # ── Save/toggle this character's Razor Enhanced Dress List ──────────────
     elif btype == 'dresslistname':

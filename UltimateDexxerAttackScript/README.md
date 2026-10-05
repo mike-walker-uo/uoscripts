@@ -38,7 +38,7 @@ The GUMP hides options when the character does not meet their skill requirements
 
 - `AttackRange` controls how far away a mobile may be before the script considers it a target.
 - `NearbyRange` controls the single-target and multi-target combat logic. It can be set wider than melee range; Momentum Strike can hit separated targets.
-- `HonorRange` controls the maximum distance for Honor attempts.
+- `HonorRange` controls the maximum distance for Honor attempts. With Honor enabled, the script selects the closest full-health eligible mobile, even while attacking a damaged target. It keeps attacking while waiting for the Honor cursor. Honor is normally skipped while the Honored buff is active.
 - The script can attack the nearest target, favor a low-health target in a melee group, prioritize changelings, or use the optional smart-target scoring.
 - Blue mobiles and red humans are excluded by default. Both filters can be changed in the GUMP, but enabling them can attack players or other unintended targets.
 - Distance markers show whether the selected target is within the configured combat range.
@@ -51,10 +51,16 @@ The script recognizes the equipped weapon and selects its configured single-targ
 - Single target: uses the configured primary or secondary ability. Optional Smart Specials can favor Mortal Strike, Paralyzing Blow, Concussion Blow or Armor Ignore for selected targets.
 - Multiple targets: uses the configured group ability, normally Whirlwind when the weapon supports it.
 - With weapon specials enabled, Lightning Strike is the low-mana single-target fallback and Momentum Strike is the low-mana multi-target fallback.
-- `Weapon Specials Off`: disables primary and secondary weapon abilities. Lightning Strike becomes the normal enabled single-target move; Focus Attack, Death Strike, Onslaught and other spell-based moves still work.
+- `Weapon Specials Off`: disables primary and secondary weapon abilities. Lightning Strike becomes the normal enabled single-target move, and Momentum Strike can be used against multiple targets; Focus Attack, Death Strike, Onslaught and other spell-based moves still work.
 - A readied weapon ability is not overwritten by Lightning Strike, Momentum Strike or another combat move.
 
 Available combat options also include Honor, Enemy of One, Divine Fury, Consecrate Weapon, Holy Light, Counter Attack, Confidence, Evasion, Onslaught, Honorable Execution, Curse Weapon and Playing the Odds. Spellweaving support includes Arcane Focus, Summon Fey, Immolating Weapon, Attune Weapon and Thunderstorm.
+
+## Low-stamina Divine Fury
+
+Under `3: Attacks`, enable `DF Low Stam` to cast Divine Fury when stamina falls below an absolute threshold. This option defaults to off and is independent of the existing `DivineFury` pre-attack toggle.
+
+Enter a positive whole number in `DF Stam <:` and click its `Save` button. The default is 180; stamina equal to the threshold does not trigger a cast. Both this threshold and the opt-in toggle save immediately to the character profile. Casting still requires sufficient mana, no Paralyze, a clear spell timer and no existing Divine Fury buff.
 
 ## Ninjitsu
 
@@ -81,7 +87,7 @@ The loop reserves mana for the next hiding move and Backstab. Whirlwind is only 
 Blood Oath handling takes priority over normal combat:
 
 - The script warns the player and leaves War mode.
-- If Enchanted Apples are enabled and an apple is in the backpack, it uses one with a 60-second cooldown.
+- If Enchanted Apples are enabled and an apple is in the backpack, it attempts to use one. The 60-second cooldown starts only after consumption is confirmed. Rejected uses retry after three seconds without pausing combat.
 - Apples are used only for Blood Oath, not for other curses.
 - If the apple is missing, cooling down or unsuccessful, the script attempts Remove Curse when enabled.
 - While Blood Oath remains active, the only permitted attack is Whirlwind with more than two attackable mobiles within `AttackRange`. Other weapon abilities and normal single-target attacks are cleared or blocked.
@@ -98,7 +104,7 @@ The `Slayer Sets` tab manages per-character weapons and talismans for Undead, Re
 
 ## Healing, defense and supplies
 
-- Automatic Greater Refresh, Greater Cure and optional emergency Greater Heal potions use their own cooldowns and configurable thresholds.
+- Automatic Greater Refresh, Greater Cure and optional emergency Greater Heal potions use their own cooldowns and configurable thresholds. Cooldowns begin after confirmed consumption; rejected uses can retry after three seconds.
 - Remove Poison, Remove Curse and Close Wounds are normally used when no enemy is within six tiles. Blood Oath has its own Remove Curse handling.
 - Confidence, Evasion, Counter Attack, Curse Weapon and other defensive actions can be enabled separately.
 - A trapped crate can break Paralyze. The script also handles the Binding Bracelet and clears stuck target cursors.
@@ -107,8 +113,8 @@ The `Slayer Sets` tab manages per-character weapons and talismans for Undead, Re
 
 ## Loot and backpack handling
 
-- `MoveArtisToLootBag` moves the artifacts listed in the script into a selected bag every ten seconds. Enabling it asks you to target a bag inside the backpack. If the saved bag cannot be found, the script asks for a new one and saves it to the character profile.
-- Chest of Heirlooms items are dropped from the backpack onto a nearby ground tile every ten seconds.
+- `MoveArtisToLootBag` scans for the artifacts listed in the script every ten seconds once previous work has finished, then moves them into a selected bag across ticks with 600 ms between moves. Enabling it asks you to target a bag inside the backpack. If the saved bag cannot be found, the script asks for a new one and saves it to the character profile.
+- Chest of Heirlooms items are discovered every ten seconds and dropped onto nearby ground tiles across ticks. Ground-drop attempts are paced 600 ms apart and checked for success; same-graphic decoy items are skipped.
 - Bag of Sending support sends gold to the bank when the character is close to the weight limit and warns about missing bags or low charges.
 
 ## Safety and ignored targets
