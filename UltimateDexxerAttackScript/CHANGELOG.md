@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.34 - 2026-10-08
+
+### Fixed
+
+- Disabled the default mobile-body ignore for `0x02D0` (highland boura), which is also used by lava elementals. Hostile lava elementals are now eligible targets; highland boura sharing this body are also eligible under the existing targeting rules.
+
 ## 1.33 - 2026-10-05
 
 ### Added
