@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.35 - 2026-10-10
+
+### Fixed
+
+- Corrected the squirrel body ignore from `0x0114` to `0x0116`, allowing Rend and other reptalons to be targeted.
+- Removed the incorrectly labeled crane body ignore `0x0119`, allowing minotaur scouts to be targeted.
+
 ## 1.34 - 2026-10-08
 
 ### Fixed
