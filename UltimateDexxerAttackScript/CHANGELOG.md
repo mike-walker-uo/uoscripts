@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.36 - 2026-10-10
+
+### Fixed
+
+- Removed the eagle body ignore `0x0005`, which Pyre also uses on this shard. Pyre and other mobiles sharing this body are now eligible under the existing targeting rules.
+
 ## 1.35 - 2026-10-10
 
 ### Fixed

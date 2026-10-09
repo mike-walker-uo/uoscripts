@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.35 last edit 10.10.2026 ###
+### Version 1.36 last edit 10.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -419,7 +419,6 @@ mobileIDsToIgnore = {
     0x00F3,  # mountain goat
     
     
-    0x0005,  # eagle
     0x0002,  # brown bear (variant)
     0x00A7,  # polar bear
     0x0125,  # ridge ostard
