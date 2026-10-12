@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.37 - 2026-10-12
+
+### Fixed
+
+- Weapon swaps no longer select unarmed defaults or spam `No weapon!` during empty-hand gaps.
+- Weapon abilities pause while hands are empty; pending specials clear. New weapons select the correct ability slot immediately.
+- Added regression tests for swap gaps, pending specials, weapon detection and unknown-weapon fallback.
+
 ## 1.36 - 2026-10-10
 
 ### Fixed

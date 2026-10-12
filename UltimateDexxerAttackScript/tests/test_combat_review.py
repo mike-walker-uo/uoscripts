@@ -19,6 +19,7 @@ class CombatReviewTests(unittest.TestCase):
         tree = ast.parse(SOURCE.read_text())
         exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)],
                                 type_ignores=[]), str(SOURCE), 'exec'), self.ns)
+        self.ns['weapon_ready'] = lambda: True
 
     def test_blood_oath_blocks_prearm_and_clears_early_return(self):
         self.ns.update(sv={'activeattack': 1, 'disable_weaponspecials': 0},

@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.36 last edit 10.10.2026 ###
+### Version 1.37 last edit 12.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -763,17 +763,13 @@ def checkweapon():
     # fighting() must see the NEW weapon, not the one from script start.
     global weapon_set, _cached_fcr, _cached_fc, _cached_castpause, lmc, lrc, equippedweapon
 
-    weapon_set = 'default'
-    equippedweapon = Player.GetItemOnLayer('FirstValid')
-    if not equippedweapon:
-        equippedweapon = Player.GetItemOnLayer('LeftHand')
+    # An empty hand during a swap must not select the unarmed default.
+    equippedweapon = _current_weapon()
 
     if equippedweapon:
         weapon_set = _weapon_key_by_item_id.get(equippedweapon.ItemID, 'default')
         if weapon_set == 'default':
             weapons['default'].ItemID = equippedweapon.ItemID
-    else:
-        Player.HeadMessage(20,"No weapon!")
 
     # Refresh stats after weapon/gear swap
     lmc              = (min(40, Player.LowerManaCost)) / 100
@@ -781,6 +777,17 @@ def checkweapon():
     _cached_fc       = Player.FasterCasting
     _cached_fcr      = min(6, Player.FasterCastRecovery)
     _cached_castpause = max(((6 - _cached_fcr) * 250) + serverdelay, serverdelay)
+
+def weapon_ready():
+    current = _current_weapon()
+    if not current:
+        if Player.HasSpecial:
+            Player.WeaponClearSA()
+        return False
+    # Do not wait for the periodic check after a manual or automatic swap.
+    if not equippedweapon or current.Serial != equippedweapon.Serial:
+        checkweapon()
+    return equippedweapon is not None
 
 # ── Slayer auto-swap (weapon + talisman) ─────────────────────────────────────
 # Registry lives in a per-character AttackScript_SlayerSets_<serial>.json file
@@ -2239,6 +2246,8 @@ def weapon_special_base_mana(name):
     return 30
 
 def arm_shadow_strike():
+    if not weapon_ready():
+        return False
     slot = shadow_strike_slot()
     if slot is None:
         return False
@@ -2281,6 +2290,8 @@ def arm_backstab():
     return False
 
 def arm_filler_special(nearby_enemies):
+    if not weapon_ready():
+        return False
     if sv['disable_weaponspecials'] == 1:
         return False
     slot, name = other_weapon_special()
@@ -2491,6 +2502,8 @@ def prearm_weaponspecial():
         if Player.HasSpecial:
             Player.WeaponClearSA()
         return
+    if not weapon_ready():
+        return
     if selected_ninjitsu_attack() is not None:
         arm_ninjitsu_attack()
         return
@@ -2529,6 +2542,9 @@ def fighting(nearest, victims_6, victims_10, nearby_enemies, attackrange_enemy_c
 
     global firsthitmob
     #Misc.SendMessage ('Attack: {}'.format(nearest.Name))
+
+    if not weapon_ready():
+        return
 
     if sv['disable_weaponspecials'] == 1 and Player.HasSpecial:
         Player.WeaponClearSA()
