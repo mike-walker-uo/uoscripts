@@ -17,7 +17,7 @@ def load_script(filename, namespace):
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
-            if name in ('SETTINGS_KEYS', 'DF_STAM_ENTRY', 'DRESS_NAME_ENTRY',
+            if name in ('_flow', 'SETTINGS_KEYS', 'DF_STAM_ENTRY', 'DRESS_NAME_ENTRY',
                         'TAB_SETTINGS', 'TAB_SLAYER', 'sections', '_section_indices'):
                 exec(compile(ast.Module(body=[node], type_ignores=[]), filename, 'exec'), namespace)
     return tree
@@ -29,13 +29,14 @@ class DivineFuryStaminaTests(unittest.TestCase):
         self.casts = []
         self.timers = {}
         self.messages = []
-        self.player = Obj(Stam=100, Mana=30, Paralized=False,
+        self.player = Obj(Stam=100, Mana=30, Paralized=False, HasSpecial=False,
                           BuffsExist=lambda name: False,
                           GetSkillValue=lambda name: 120,
                           HeadMessage=lambda *args: self.messages.append(args))
         self.misc = Obj(ReadSharedValue=lambda key: self.settings.get(key, 0),
                         SetSharedValue=self.settings.__setitem__)
         self.attack = dict(Player=self.player, Misc=self.misc, sv={}, lmc=0,
+                           Target=Obj(HasTarget=lambda: False),
                            Spells=Obj(CastChivalry=self.casts.append),
                            Timer=Obj(Check=lambda key: key in self.timers,
                                      Create=self.timers.__setitem__),

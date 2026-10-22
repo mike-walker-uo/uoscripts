@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.38 - 2026-10-22
+
+### Added
+
+- Saved, opt-in `Attack Lighthouses` button under `3: Attacks`. Attacks Plunder Beacons and Blackthorn lighthouses within `AttackRange`, including all three damage graphics (`0x4724`, `0x9983`, `0x9984`). Hostile mobs keep priority.
+- Optional shared timers and target signals let compatible controllers, trackers and loot scripts coordinate with combat. Attack script and GUMP still work standalone.
+
+### Changed
+
+- Adjacent mobs take priority over distant targets for melee builds. Current targets remain stable within the same priority; stalled targets can be replaced after eight seconds without progress. Ranged targeting is preserved.
+- Spell and weapon-ability actions share guards against competing casts and repeated arming. Ordinary attack requests refresh once per second, with immediate requests on target changes or after ability setup.
+- Optional buffs and automatic slayer swaps defer during melee. Dress upkeep and background inventory work defer during combat.
+- Equipment swaps run across ticks with equip confirmation. GUMP manual equips queue requests; disarm recovery allows a 1.2-second swap grace period.
+- Honor, pet commands and Bag of Sending targeting run across ticks. Property/context requests avoid blocking waits; missing artifact loot bags now require selection through the GUMP.
+
+### Fixed
+
+- Readied Whirlwind survives subsequent combat ticks. Permitted Blood Oath Whirlwind keeps War mode active; other Blood Oath attacks remain blocked.
+- Pending cursor requests survive invalid targets and late responses. Rejected target execution no longer reports a command as completed.
+- A three-second watchdog clears lingering cursors, including bandage cursors, while Attack is on. Manual GUMP prompts and active external target reservations are protected.
+- Timer resets use positive intervals, avoiding Razor's zero-interval exception.
+- Added regression coverage for combat flow, target priority, cursor recovery, equipment queues, saved lighthouse settings and item attacks.
+
 ## 1.37 - 2026-10-12
 
 ### Fixed

@@ -14,12 +14,17 @@ class CombatReviewTests(unittest.TestCase):
         self.ns = {
             'Timer': Obj(Check=lambda n: self.timers.get(n, 0) > self.now,
                          Create=lambda n, ms: self.timers.update({n: self.now + ms})),
-            'Misc': Obj(Pause=lambda ms: self.calls.append(('pause', ms))),
+            'Target': Obj(HasTarget=lambda: False),
+            'Misc': Obj(Pause=lambda ms: self.calls.append(('pause', ms)),
+                        ReadSharedValue=lambda name: 0, SetSharedValue=lambda *args: None),
         }
         tree = ast.parse(SOURCE.read_text())
         exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)],
                                 type_ignores=[]), str(SOURCE), 'exec'), self.ns)
         self.ns['weapon_ready'] = lambda: True
+        self.ns['_flow'] = ast.literal_eval(next(n.value for n in tree.body
+            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+            and n.targets[0].id == '_flow'))
 
     def test_blood_oath_blocks_prearm_and_clears_early_return(self):
         self.ns.update(sv={'activeattack': 1, 'disable_weaponspecials': 0},
@@ -27,7 +32,7 @@ class CombatReviewTests(unittest.TestCase):
                                   WeaponClearSA=lambda: self.calls.append('clear')))
         self.ns['prearm_weaponspecial']()
         self.ns['fighting'](None, [], [], [], 2)
-        self.assertEqual(self.calls, ['clear', 'clear'])
+        self.assertEqual(self.calls, ['clear'])
 
     def test_disarm_retries_last_weapon_with_shield_equipped(self):
         weapon = Obj(Serial=17, ItemID=0xF61, Container=99)
@@ -41,16 +46,20 @@ class CombatReviewTests(unittest.TestCase):
             Player=Obj(Backpack=Obj(Serial=99),
                        GetItemOnLayer=lambda layer: hands[layer],
                        EquipItem=lambda serial: self.calls.append(serial)),
-            Items=Obj(FindBySerial=lambda serial: weapon if serial == weapon.Serial else None))
+            Items=Obj(FindBySerial=lambda serial: weapon if serial == weapon.Serial else None),
+            item_is_in_backpack=lambda item: True)
         self.ns['reequip_last_weapon']()
         self.assertEqual(self.calls, [])
 
         hands['RightHand'] = None
         self.ns['reequip_last_weapon']()
+        self.assertEqual(self.calls, [])
+        self.now = 1200
+        self.ns['reequip_last_weapon']()
         self.ns['reequip_last_weapon']()
         self.assertEqual(self.calls, [weapon.Serial])
         self.assertEqual(self.ns['_last_equipped_weapon_serial'], weapon.Serial)
-        self.now = 1000
+        self.now = 2200
         self.ns['reequip_last_weapon']()
         self.assertEqual(self.calls, [weapon.Serial, weapon.Serial])
 
@@ -68,24 +77,24 @@ class CombatReviewTests(unittest.TestCase):
         self.timers.update({name: 1000 for name in
                             ('sv_refresh', 'dress', 'mobscan', 'weaponcheck')})
         self.ns.update(
-            sv={'activeattack': 1, 'nearbyrange': 1, 'use_df': 0, 'use_cw': 0,
+            sv={'activeattack': 1, 'attackrange': 12, 'use_pet_sync': 0, 'nearbyrange': 1, 'use_df': 0, 'use_cw': 0,
                 'use_thunderstorm': 0, 'use_smart_target': 0, 'use_distancemarker': 0,
                 'use_honor': 1, 'honordistance': 10, 'use_messages': 1},
-            use_honor_fix=0, _pending_honor_target=None,
+            use_honor_fix=0, _is_ranged_build=False,
             _victims_cache=mobs, _changelings_cache=[],
-            Misc=Obj(ReadSharedValue=lambda name: 1,
-                     Pause=lambda ms: None),
+            Misc=Obj(ReadSharedValue=lambda name: 1 if name == 'activeattack' else 0,
+                     SetSharedValue=lambda *args: None, Pause=lambda ms: None),
             Player=Obj(DistanceTo=lambda mob: distances[mob.Serial],
                        BuffsExist=lambda name: False,
                        InvokeVirtue=lambda name: self.calls.append(('virtue', name)),
                        HeadMessage=lambda color, message: self.calls.append(('message', message))),
-            Target=Obj(HasTarget=lambda: cursor[0],
+            Target=Obj(HasTarget=lambda flag=None: cursor[0] if flag is None else False,
                        WaitForTarget=lambda *args: self.fail('Honor must not wait'),
-                       TargetExecute=lambda mob: (self.calls.append(('honor', mob.Serial)),
+                       TargetExecute=lambda serial: (self.calls.append(('honor', serial)),
                                                   cursor.__setitem__(0, False))),
             fighting=lambda mob, *args: self.calls.append(('fight', mob.Serial)))
-        for name in ('reequip_last_weapon', 'track_weapon_special_state',
-                     'track_backstab_execution', 'clear_stuck_target_cursor',
+        for name in ('advance_equipment', 'reequip_last_weapon', 'track_weapon_special_state',
+                     'track_backstab_execution',
                      'binding_bracelet', 'trappedcrate', 'checkbloodoath', 'auto_potion',
                      'checkhits', 'evasion', 'curseweapon', 'divinefury_lowstam',
                      'checkweight', 'castsummonfey', 'checkwhitetigerform', 'dresslist',
@@ -93,7 +102,7 @@ class CombatReviewTests(unittest.TestCase):
                      'release_one_mirror_image', 'castmirrorimage', 'checkweapon',
                      'attuneweapon', 'immolatingweapon', 'counterattack', 'holylight',
                      'removepoison', 'removecurse', 'closewounds', 'slayer_swap_tick',
-                     'prearm_weaponspecial', 'playingtheodds'):
+                     'prearm_weaponspecial', 'playingtheodds', 'combat_buffs'):
             self.ns[name] = lambda *args: None
         self.ns['continue_hidden_backstab'] = lambda: False
         self.ns['backstab_locked_target'] = lambda victims: None
@@ -102,7 +111,7 @@ class CombatReviewTests(unittest.TestCase):
         self.assertIn(('fight', 1), self.calls)
         self.assertLess(self.calls.index(('fight', 1)), self.calls.index(('virtue', 'Honor')))
         self.assertNotIn(('honor', 3), self.calls)
-        self.assertEqual(self.ns['_pending_honor_target'].Serial, 3)
+        self.assertEqual(self.ns['_flow']['cursor']['target'].Serial, 3)
 
         self.calls.clear()
         cursor[0] = True
@@ -119,17 +128,27 @@ class CombatReviewTests(unittest.TestCase):
 
     def test_pet_cursor_timeout_retries_same_target(self):
         cursor = [False]
-        self.ns.update(sv={'use_pet_sync': 1}, _last_pet_target_serial=0,
-                       Player=Obj(Followers=1, ChatSay=lambda s: self.calls.append(s)),
-                       Target=Obj(HasTarget=lambda: cursor[0],
+        self.ns.update(sv={'use_pet_sync': 1, 'activeattack': 1, 'attackrange': 10}, _last_pet_target_serial=0,
+                       Player=Obj(Followers=1, ChatSay=lambda s: self.calls.append(s),
+                                  BuffsExist=lambda name: False, DistanceTo=lambda mob: 1),
+                       Target=Obj(HasTarget=lambda flag=None: cursor[0] if flag is None else False,
                                   WaitForTarget=lambda *a: None,
-                                  TargetExecute=lambda s: self.calls.append(s)))
-        target = Obj(Serial=123)
+                                  Cancel=lambda: cursor.__setitem__(0, False),
+                                  TargetExecute=lambda s: (self.calls.append(s), cursor.__setitem__(0, False))))
+        target = Obj(Serial=123, Deleted=False)
         self.ns['sync_pet_target'](target)
         self.assertEqual(self.ns['_last_pet_target_serial'], 0)
         self.now = 2000
-        self.ns['Target'].WaitForTarget = lambda *a: cursor.__setitem__(0, True)
+        self.ns['service_cursor']()
+        self.ns['_flow']['cursor_used'] = False
         self.ns['sync_pet_target'](target)
+        self.assertEqual(self.calls, ['all kill'])  # Reserve time for a late cursor.
+        self.now = 5000
+        self.ns['service_cursor']()
+        self.ns['_flow']['cursor_used'] = False
+        self.ns['sync_pet_target'](target)
+        cursor[0] = True
+        self.ns['service_cursor']()
         self.assertEqual(self.calls, ['all kill', 'all kill', 123])
         self.assertEqual(self.ns['_last_pet_target_serial'], 123)
 
@@ -248,26 +267,29 @@ class CombatReviewTests(unittest.TestCase):
         self.ns['release_one_mirror_image'](True)
         self.assertEqual(waits, [2])
         self.assertEqual(replies, [])
+        self.now = 250
         self.ns['release_one_mirror_image'](True)
         self.assertEqual(waits, [2, 3])
         self.assertEqual(replies, [(3, 7)])
 
     def test_hidden_cycle_still_refreshes_settings_and_alerts(self):
-        self.ns.update(sv={}, Misc=Obj(ReadSharedValue=lambda n: 1, Pause=lambda ms: None),
+        self.ns.update(sv={'attackrange': 12, 'attack_blue_changelings': 0}, _victims_cache=[], _changelings_cache=[], Misc=Obj(ReadSharedValue=lambda n: 1 if n == 'activeattack' else 0, Pause=lambda ms: None),
+                       mobs_list=lambda distance: [], publish_combat_activity=lambda mobs: None,
                        refresh_sv=lambda: self.calls.append('settings'),
                        legendarycheck=lambda: self.calls.append('alert'),
                        track_weapon_special_state=lambda: None,
-                       track_backstab_execution=lambda: None, clear_stuck_target_cursor=lambda: None,
+                       track_backstab_execution=lambda: None, service_cursor=lambda: None,
                        continue_hidden_backstab=lambda: self.calls.append('backstab') or True,
                        reequip_last_weapon=lambda: None,
-                       complete_pending_honor=lambda: None)
+                       advance_equipment=lambda: None, binding_bracelet=lambda: None,
+                       trappedcrate=lambda: None, checkbloodoath=lambda: None, auto_potion=lambda: None)
         self.ns['run_tick']()
         self.assertEqual(self.calls, ['settings', 'alert', 'backstab'])
 
     def test_momentum_with_specials_off_at_high_mana(self):
         self.ns.update(sv=dict(disable_weaponspecials=1, use_onslaught=0, use_eoo=0,
                                use_momentumstrike=1, use_messages=0),
-                       Player=Obj(HasSpecial=False, WarMode=True, Mana=100,
+                       Player=Obj(HasSpecial=False, WarMode=True, Mana=100, Paralized=False,
                                   BuffsExist=lambda n: False, SpellIsEnabled=lambda n: False,
                                   Attack=lambda n: None),
                        selected_ninjitsu_attack=lambda: None, backstab_cycle_attack=lambda *a: False,

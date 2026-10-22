@@ -15,7 +15,7 @@ class WeaponSwapTests(unittest.TestCase):
         self.current = self.sword
         self.player = Obj(
             GetItemOnLayer=lambda layer: self.current if layer == 'FirstValid' else None,
-            HasSpecial=False, Mana=100, Paralized=False,
+            HasSpecial=False, Mana=100, Paralized=False, Visible=True, WarMode=True,
             BuffsExist=lambda name: False, SpellIsEnabled=lambda name: False,
             HeadMessage=lambda *args: self.calls.append(('message', args)),
             WeaponPrimarySA=lambda: self.calls.append('primary'),
@@ -25,6 +25,8 @@ class WeaponSwapTests(unittest.TestCase):
             LowerManaCost=40, SumAttribute=lambda name: 100,
             FasterCasting=2, FasterCastRecovery=6)
         self.ns = dict(
+            Misc=Obj(ReadSharedValue=lambda name: 0),
+            _last_other_hand_serial=0, _last_equipped_weapon_serial=17,
             Player=self.player, Timer=Obj(Check=lambda name: False,
                                          Create=lambda *args: self.calls.append(('timer', args))),
             equippedweapon=self.sword, weapon_set='sword',
@@ -38,6 +40,9 @@ class WeaponSwapTests(unittest.TestCase):
         tree = ast.parse(SOURCE.read_text())
         exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)],
                                 type_ignores=[]), str(SOURCE), 'exec'), self.ns)
+        self.ns['_flow'] = ast.literal_eval(next(n.value for n in tree.body
+            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+            and n.targets[0].id == '_flow'))
         self.ns.update(selected_ninjitsu_attack=lambda: None,
                        backstab_loop_enabled=lambda: False,
                        get_weaponabilitiesmanacost=lambda mana: mana)
@@ -53,12 +58,14 @@ class WeaponSwapTests(unittest.TestCase):
     def test_unarmed_gap_blocks_all_weapon_special_paths(self):
         self.current = None
         for name, args in (('prearm_weaponspecial', ()),
-                           ('fighting', (None, [], [], [], 0)),
-                           ('arm_shadow_strike', ()),
+                                                      ('arm_shadow_strike', ()),
                            ('arm_filler_special', ([],))):
             with self.subTest(name=name):
                 self.ns[name](*args)
                 self.assertEqual(self.calls, [])
+        self.ns['fighting'](Obj(Serial=1), [], [], [], 0)
+        self.assertEqual(self.calls, ['attack', ('timer', ('attack_keepalive', 1000))])
+        self.calls.clear()
         self.player.HasSpecial = True
         self.ns['prearm_weaponspecial']()
         self.assertEqual(self.calls, ['clear'])

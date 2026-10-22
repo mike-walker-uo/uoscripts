@@ -41,8 +41,15 @@ The GUMP hides options when the character does not meet their skill requirements
 - `HonorRange` controls the maximum distance for Honor attempts. With Honor enabled, the script selects the closest full-health eligible mobile, even while attacking a damaged target. It keeps attacking while waiting for the Honor cursor. Honor is normally skipped while the Honored buff is active.
 - The script can attack the nearest target, favor a low-health target in a melee group, prioritize changelings, or use the optional smart-target scoring.
 - Blue mobiles and red humans are excluded by default. Both filters can be changed in the GUMP, but enabling them can attack players or other unintended targets.
+- For melee builds, an adjacent enemy takes priority over a distant target, including a controller preference. Otherwise, targets remain stable until invalid, outranked or stalled for eight seconds without progress.
 - Distance markers show whether the selected target is within the configured combat range.
 - Pet Sync sends `all kill` when the selected target changes without repeating the command on every loop.
+
+## Lighthouse attacks
+
+Enable `Attack Lighthouses` under `3: Attacks` to attack Plunder Beacons and Blackthorn Dungeon lighthouses. It defaults to off and saves immediately per character. `Attack On` must also be enabled.
+
+The script scans ground items within `AttackRange` for `0x4724` (intact), `0x9983` (damaged) and `0x9984` (heavily damaged), then attacks the nearest visible match by serial. Destroyed items are discarded. Hostile mobiles keep priority; Honor and pet commands are not used on lighthouse items. Server vulnerability and weapon-range requirements still apply.
 
 ## Weapon abilities
 
@@ -86,7 +93,7 @@ The loop reserves mana for the next hiding move and Backstab. Whirlwind is only 
 
 Blood Oath handling takes priority over normal combat:
 
-- The script warns the player and leaves War mode.
+- The script warns the player and leaves War mode when combat is blocked. Permitted Whirlwind combat keeps War mode active.
 - If Enchanted Apples are enabled and an apple is in the backpack, it attempts to use one. The 60-second cooldown starts only after consumption is confirmed. Rejected uses retry after three seconds without pausing combat.
 - Apples are used only for Blood Oath, not for other curses.
 - If the apple is missing, cooling down or unsuccessful, the script attempts Remove Curse when enabled.
@@ -107,13 +114,13 @@ The `Slayer Sets` tab manages per-character weapons and talismans for Undead, Re
 - Automatic Greater Refresh, Greater Cure and optional emergency Greater Heal potions use their own cooldowns and configurable thresholds. Cooldowns begin after confirmed consumption; rejected uses can retry after three seconds.
 - Remove Poison, Remove Curse and Close Wounds are normally used when no enemy is within six tiles. Blood Oath has its own Remove Curse handling.
 - Confidence, Evasion, Counter Attack, Curse Weapon and other defensive actions can be enabled separately.
-- A trapped crate can break Paralyze. The script also handles the Binding Bracelet and clears stuck target cursors.
+- A trapped crate can break Paralyze. The script also handles the Binding Bracelet. While Attack is on, a three-second watchdog clears lingering cursors, including bandage cursors; manual GUMP prompts and active external target reservations are protected.
 - Bandage, arrow, quiver, Vampiric Embrace and town-buff checks warn when attention is needed.
 - An optional Razor Enhanced dress list can be maintained. Save the exact Dress/Arm list name in the character profile.
 
 ## Loot and backpack handling
 
-- `MoveArtisToLootBag` scans for the artifacts listed in the script every ten seconds once previous work has finished, then moves them into a selected bag across ticks with 600 ms between moves. Enabling it asks you to target a bag inside the backpack. If the saved bag cannot be found, the script asks for a new one and saves it to the character profile.
+- `MoveArtisToLootBag` scans for the artifacts listed in the script every ten seconds once previous work has finished, then moves them into a selected bag across ticks with 600 ms between moves. Use the GUMP to select a bag inside the backpack. If the saved bag cannot be found, automatic movement pauses and warns you to select a new bag through the GUMP.
 - Chest of Heirlooms items are discovered every ten seconds and dropped onto nearby ground tiles across ticks. Ground-drop attempts are paced 600 ms apart and checked for success; same-graphic decoy items are skipped.
 - Bag of Sending support sends gold to the bank when the character is close to the weight limit and warns about missing bags or low charges.
 
@@ -124,3 +131,13 @@ The `Slayer Sets` tab manages per-character weapons and talismans for Undead, Re
 - Rare-mob detection can mark a rare and optionally stop combat.
 - Legendary and astral pet journal alerts display repeated warnings and run a blocking alarm. Combat remains frozen during the alert to avoid attacking the spawned pet.
 - The main loop recovers from occasional mobile, targeting and API errors. Repeated errors produce a louder warning instead of failing silently.
+
+## Optional companion coordination
+
+Only the attack script and GUMP are required. Compatible external scripts can read `attack_combat_busy` and `attack_inventory_busy` to defer background work, reserve targeting with `attack_external_target_busy`, and coordinate targets through `attack_selected_target` / `attack_controller_target`. Missing timers do not block standalone operation.
+
+Lootmaster pauses during combat only if its own version implements these checks. The original Lootmaster does not automatically pause because the attack script is running.
+
+## Offline regression tests
+
+Run `python3 -m unittest discover -s UltimateDexxerAttackScript/tests -p 'test_*.py'` from the repository root. Tests use mocks and do not require a game client. Optional companion integration tests skip when their scripts are absent. Live shard behavior still requires in-game verification.

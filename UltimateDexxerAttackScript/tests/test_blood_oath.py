@@ -32,7 +32,9 @@ class BloodOathTests(unittest.TestCase):
                 Create=lambda name, delay: self.timers.update({name: self.now + delay})),
             'Items': SimpleNamespace(UseItem=self.use_apple,
                                     FindBySerial=lambda serial: self.apple),
-            'Misc': SimpleNamespace(Pause=self.pause),
+            'Misc': SimpleNamespace(Pause=self.pause, ReadSharedValue=lambda name: 0,
+                                    SetSharedValue=lambda *args: None),
+            'Target': SimpleNamespace(HasTarget=lambda: False),
             'Spells': SimpleNamespace(CastChivalry=self.remove_curse),
             'sv': self.settings,
             'find_enchanted_apple': lambda: self.apple,
@@ -42,13 +44,17 @@ class BloodOathTests(unittest.TestCase):
         }
         tree = ast.parse(SCRIPT.read_text(encoding='utf-8'))
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-                     and node.name in ('checkbloodoath', 'blood_oath_apple_warning')]
+                     and node.name in ('checkbloodoath', 'blood_oath_apple_warning', 'cast_action', 'release_cursor')]
         exec(compile(ast.Module(body=functions, type_ignores=[]), str(SCRIPT), 'exec'),
              self.namespace)
+        self.namespace['_flow'] = ast.literal_eval(next(n.value for n in tree.body
+            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+            and n.targets[0].id == '_flow'))
         self.check = self.namespace['checkbloodoath']
 
     def pause(self, milliseconds):
         self.now += milliseconds
+        self.namespace['_flow'].update(spell_used=False, ability_used=False, cursor_used=False)
 
     def use_apple(self, apple):
         self.use_calls += 1

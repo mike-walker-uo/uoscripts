@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.37 last edit 12.10.2026 ###
+### Version 1.38 last edit 22.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -50,7 +50,7 @@ SLAYER_FILE = os.path.join(
 )
 
 SETTINGS_KEYS = [
-    "attack_blues", "attack_red_humans", "attack_blue_changelings",
+    "attack_blues", "attack_red_humans", "attack_blue_changelings", "use_attack_lighthouses",
     "use_messages",
     "use_bagofsending", "use_move_artis", "lootbag_serial",
     "use_trappedcrate", "use_townbuff",
@@ -103,8 +103,14 @@ def save_settings(extra_data=None):
 
 
 def prompt_target(message):
+    if Misc.ReadSharedValue("attack_cursor_owner"):
+        Player.HeadMessage(30, "Targeting busy; try again")
+        return 0
     Misc.SetSharedValue("attack_gump_targeting", 1)
     try:
+        if Misc.ReadSharedValue("attack_cursor_owner"):
+            Player.HeadMessage(30, "Targeting busy; try again")
+            return 0
         return Target.PromptTarget(message)
     finally:
         Misc.SetSharedValue("attack_gump_targeting", 0)
@@ -237,45 +243,19 @@ def current_talisman_serial():
 def manual_slayer_equip(entry, is_weapon):
     serial = entry.get('serial', 0)
     item = Items.FindBySerial(serial)
-    if not item:
-        Player.HeadMessage(30, "Item missing: %s" % entry.get('name', '?'))
+    equipped = current_weapon_serial() if is_weapon else current_talisman_serial()
+    if not item or (equipped != serial and not item_is_in_backpack(item)):
+        Player.HeadMessage(30, "Item missing from backpack: %s" % entry.get('name', '?'))
         return
-
-    if is_weapon:
-        if current_weapon_serial() == serial:
-            Player.HeadMessage(50, "Already equipped")
-        else:
-            current = Player.GetItemOnLayer('FirstValid')
-            if not current:
-                current = Player.GetItemOnLayer('LeftHand')
-            if current:
-                right = Player.GetItemOnLayer('RightHand')
-                if right and right.Serial == current.Serial:
-                    Player.UnEquipItemByLayer('RightHand')
-                else:
-                    Player.UnEquipItemByLayer('LeftHand')
-                Misc.Pause(600)
-            Player.EquipItem(serial)
-            Misc.Pause(600)
-    else:
-        if current_talisman_serial() == serial:
-            Player.HeadMessage(50, "Already equipped")
-        else:
-            if Player.GetItemOnLayer('Talisman'):
-                Player.UnEquipItemByLayer('Talisman')
-                Misc.Pause(600)
-            Player.EquipItem(serial)
-            Misc.Pause(600)
-
-    equipped_serial = current_weapon_serial() if is_weapon else current_talisman_serial()
-    if equipped_serial != serial:
-        Player.HeadMessage(30, "Equip failed: %s" % entry.get('name', '?'))
-        return
-
     group = Misc.ReadSharedValue("slayer_target_group") or 'none'
     Misc.SetSharedValue("slayer_hold", 1)
     Misc.SetSharedValue("slayer_hold_group", group)
-    Player.HeadMessage(68, "Manual: %s [HOLD until group change]" % entry.get('name', '?'))
+    if equipped == serial:
+        Player.HeadMessage(50, "Already equipped [HOLD until group change]")
+        return
+    Misc.SetSharedValue("attack_equip_request", json.dumps({
+        'serial': serial, 'is_weapon': is_weapon, 'name': entry.get('name', '?')}))
+    Player.HeadMessage(68, "Equip queued: %s [HOLD until group change]" % entry.get('name', '?'))
 
 
 def delete_slayer_entry(data, kind_key, entry):
@@ -296,6 +276,11 @@ class Sharedvalue:
 def SetSharedValue(sharedvalue):
     val = Misc.ReadSharedValue(sharedvalue)
     Misc.SetSharedValue(sharedvalue, 0 if val == 1 else 1)
+
+def toggle_lighthouse_attacks(sharedvalue):
+    SetSharedValue(sharedvalue)
+    save_settings()
+
 
 def toggle_df_lowstam(sharedvalue):
     SetSharedValue(sharedvalue)
@@ -905,6 +890,13 @@ sections = {
                 'sharedvalue':"use_vampiricembrace",
                 'task':SetSharedValue,
                 'tooltip':"this feature will check if you have Vampiric Embrace",
+                },
+                'Attack Lighthouses':
+                {
+                'buttontype':"setsharedvalue",
+                'sharedvalue':"use_attack_lighthouses",
+                'task':toggle_lighthouse_attacks,
+                'tooltip':"Attack Plunder Beacons and Blackthorn lighthouses within AttackRange when no hostile mobs are in range. Includes damaged graphics. Requires Attack On; saved per character.",
                 },
         },
 
