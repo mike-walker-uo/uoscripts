@@ -1,6 +1,6 @@
 ### UO Ultimate Mage Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.48 last edit 03.08.2026 ###
+### Version 0.52 last edit 22.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to Python Script Section in Razor Enhanced ###
 ### START THE ATTACK SCRIPT FIRST — then start the GUMP script ###
@@ -11,6 +11,7 @@ import json
 import os
 from System.Collections.Generic import List
 from System import Byte
+from System.Threading import Monitor
 
 LEGACY_PROFILE_PATH = os.path.join(Misc.CurrentScriptDirectory(), "mage_settings.json")
 
@@ -22,6 +23,34 @@ def safe_profile_name(name):
 PROFILE_FILENAME = "mage_settings_%s_%08X.json" % (
     safe_profile_name(Player.Name), int(Player.Serial))
 PROFILE_PATH = os.path.join(Misc.CurrentScriptDirectory(), PROFILE_FILENAME)
+
+def atomic_write_json(path, data):
+    """Write JSON beside its destination, then atomically replace it."""
+    temp_path = path + ".tmp"
+    try:
+        with open(temp_path, 'w') as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (AttributeError, OSError):
+                pass
+        replace = getattr(os, 'replace', None)
+        if replace is not None:
+            replace(temp_path, path)
+        elif os.path.exists(path):
+            # IronPython 2 has no os.replace; .NET provides atomic replacement.
+            from System.IO import File
+            File.Replace(temp_path, path, None)
+        else:
+            os.rename(temp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        raise
 
 Journal.Clear()
 
@@ -35,6 +64,8 @@ Misc.SetSharedValue("attack_blues", 0)
 Misc.SetSharedValue("attack_red_humans", 0)
 # check and attack blue changelings that imitate you
 Misc.SetSharedValue("attack_blue_changelings", 0)
+# Opt in to direct-damage spells against lighthouse items after hostile mobs.
+Misc.SetSharedValue("use_attack_lighthouses", 0)
 # show overhead messages
 Misc.SetSharedValue("use_messages", 1)
 # show infos about mobs (HP, weakest resist, karma)
@@ -109,7 +140,7 @@ Misc.SetSharedValue("use_lightning", 0)       # Magery C4 — 11 mana
 Misc.SetSharedValue("use_fireball", 0)        # Magery C3 — 9 mana
 Misc.SetSharedValue("use_harm", 0)            # Magery C2 — 6 mana (close range only!)
 Misc.SetSharedValue("use_magicarrow", 0)      # Magery C1 — 4 mana (last resort)
-Misc.SetSharedValue("use_wordofdeath", 1)     # SW: instantly kills mob below 10% HP
+Misc.SetSharedValue("use_wordofdeath", 1)     # SW: finisher below 30% target HP
 Misc.SetSharedValue("use_nether_bolt", 0)     # Mysticism C1 — 4 mana
 Misc.SetSharedValue("use_eaglestrike", 0)     # Mysticism C3 — 9 mana
 Misc.SetSharedValue("use_bombard", 0)         # Mysticism C6 — 20 mana, paralyzes target
@@ -235,6 +266,8 @@ Misc.SetSharedValue("use_bandages", 0)
 guardme_fey   = 0
 guardme_fiend = 0
 last_debuff_target = 0
+LIGHTHOUSE_ITEM_IDS = (0x4724, 0x9983, 0x9984)
+_lighthouse_cache = []
 last_attack_target = 0
 last_distance_marker = None
 last_player_hits = Player.Hits
@@ -247,17 +280,88 @@ los_rejected_positions = {}
 pending_pet_gor_serial = 0
 pending_pet_gor_started = 0.0
 target_wait_extended_until = 0.0
-cast_lock_since = None
-nether_pending_since = None
+cast_lock_deadline = None
+nether_pending_deadline = None
+nether_followup_pending = False
+pending_target_cursor = None
 pending_cast_cooldown = None
 busy_failure_count = 0
 busy_failure_since = None
 last_cast_recovery = 0.0
+rare_pet_alert_active = False
 serverdelay = 150  # adjust for lag (ms)
+_mage_inventory_until = 0.0
+_mage_combat = False
+
+_timer_create = Timer.Create
+
+def external_target_reserved():
+    return (Misc.ReadSharedValue('attack_gump_targeting') == 1 or
+            Timer.Check('attack_external_target_busy'))
+
+def reserve_mage_inventory(duration):
+    global _mage_inventory_until
+    duration = max(1, int(duration))
+    Timer.Create('attack_inventory_busy', duration)
+    _mage_inventory_until = time.time() + duration / 1000.0
+    if _mage_combat:
+        Timer.Create('attack_combat_busy', max(1500, duration))
+
+def begin_mage_actions():
+    """Claim the existing inventory signal before any cast or item action."""
+    Monitor.Enter(Timer.Timers)
+    try:
+        if external_target_reserved():
+            return False
+        if Timer.Check('attack_inventory_busy') and time.time() >= _mage_inventory_until:
+            if Player.Poisoned or Player.Hits <= Player.HitsMax * 0.5:
+                # Ask long helper equipment work to yield to urgent self-care.
+                Timer.Create('attack_combat_busy', 1500)
+            return False
+        reserve_mage_inventory(6000)
+        return True
+    finally:
+        Monitor.Exit(Timer.Timers)
+
+def publish_mage_combat(hostiles_nearby):
+    global _mage_combat
+    _mage_combat = bool(hostiles_nearby) and sv['activeattack'] == 1
+    Timer.Create('attack_combat_busy', 1500 if _mage_combat else 1)
+
+def pause_mage_loop(duration):
+    """Keep the lease through cast recovery/late cursors; release it when idle."""
+    Monitor.Enter(Timer.Timers)
+    try:
+        if time.time() < _mage_inventory_until:
+            remaining = max(1, Timer.Remaining('spells') + 1)
+            if pending_target_cursor is not None:
+                remaining = max(remaining, int(
+                    (pending_target_cursor['deadline'] - time.time()) * 1000) + 1)
+            if pending_pet_gor_serial:
+                remaining = max(remaining, int(
+                    (pending_pet_gor_started + 6.0 - time.time()) * 1000) + 1)
+            reserve_mage_inventory(remaining)
+    finally:
+        Monitor.Exit(Timer.Timers)
+    Misc.Pause(duration)
+
+def set_spell_timer(duration):
+    """Start one script-owned spell lock with its own watchdog deadline."""
+    global cast_lock_deadline
+    duration = max(1, int(duration))
+    _timer_create('spells', duration)
+    cast_lock_deadline = time.time() + (duration / 1000.0) + 2.0
+
+def set_nether_pending_timer(duration):
+    """Start Nether Blast ownership without exceeding its 5100 ms limit."""
+    global nether_pending_deadline
+    duration = max(1, min(5100, int(duration)))
+    _timer_create('netherblast_pending', duration)
+    nether_pending_deadline = time.time() + (duration / 1000.0)
 
 # Always start from clean script-owned cast state.
-Timer.Create("spells", 1)
-Timer.Create("netherblast_pending", 1)
+set_spell_timer(1)
+set_nether_pending_timer(1)
 Timer.Create("arcaneempowerment", 1)
 Timer.Create("colossus_confirmation", 1)
 Timer.Create("pet_giftofrenewal", 1)
@@ -299,8 +403,11 @@ def mana_cost(base):
 ##################################################################
 # Shared value cache — GUMP revision driven, with a 5s external-change fallback
 sv = {}
+_slayer_books_dirty = True
 
 def refresh_sv():
+    global _slayer_books_dirty
+    old_slayer_autoswap = sv.get('use_slayer_autoswap', 0)
     sv['activeattack']            = Misc.ReadSharedValue("activeattack")
     sv['attackrange']             = Misc.ReadSharedValue("attackrange")
     sv['multi_threshold']         = Misc.ReadSharedValue("multi_threshold")
@@ -320,6 +427,7 @@ def refresh_sv():
     sv['attack_blues']            = Misc.ReadSharedValue("attack_blues")
     sv['attack_red_humans']       = Misc.ReadSharedValue("attack_red_humans")
     sv['attack_blue_changelings'] = Misc.ReadSharedValue("attack_blue_changelings")
+    sv['use_attack_lighthouses'] = Misc.ReadSharedValue("use_attack_lighthouses")
     sv['use_arcanefocus']         = Misc.ReadSharedValue("use_arcanefocus")
     sv['use_bandages']            = Misc.ReadSharedValue("use_bandages")
     sv['use_heal']                = Misc.ReadSharedValue("use_heal")
@@ -430,6 +538,8 @@ def refresh_sv():
     sv['use_nb_auto_move']       = Misc.ReadSharedValue("use_nb_auto_move")
     sv['nb_move_hp_min']         = Misc.ReadSharedValue("nb_move_hp_min")
     sv['use_slayer_autoswap']    = Misc.ReadSharedValue("use_slayer_autoswap")
+    if sv['use_slayer_autoswap'] == 1 and old_slayer_autoswap != 1:
+        _slayer_books_dirty = True
     sv['use_bless']              = Misc.ReadSharedValue("use_bless")
     sv['use_bless_pets']         = Misc.ReadSharedValue("use_bless_pets")
     sv['use_poison_strike']      = Misc.ReadSharedValue("use_poison_strike")
@@ -1032,8 +1142,7 @@ def equipped_slayer():
 # to the strongest enabled nuke for a short window.
 nuke_cascade_until = 0.0
 
-# Debuff expiry tracking — parallel to the debuff_* timers, so the status
-# overlay can show remaining seconds (Timer has no "remaining" query).
+# Target debuff cooldowns and status expiry, keyed by (mobile serial, spell).
 debuff_expiry = {}
 DEBUFF_BADGES = {
     'debuff_evil_omen':   'EO',
@@ -1048,16 +1157,22 @@ DEBUFF_BADGES = {
     'debuff_mana_vampire':'MV',
 }
 
+def debuff_ready(key):
+    return debuff_expiry.get((last_debuff_target, key), 0) <= time.time()
+
 def track_debuff(key, ms):
-    Timer.Create(key, ms)
-    debuff_expiry[key] = time.time() + ms / 1000.0
+    now = time.time()
+    for target_key, expiry in list(debuff_expiry.items()):
+        if expiry <= now:
+            debuff_expiry.pop(target_key, None)
+    debuff_expiry[(last_debuff_target, key)] = now + ms / 1000.0
 
 def debuff_status_line():
     """Remaining seconds of tracked debuffs on the current debuff target, e.g. 'EO:4 CS:18'."""
     now = time.time()
     parts = []
     for key, badge in DEBUFF_BADGES.items():
-        rem = debuff_expiry.get(key, 0) - now
+        rem = debuff_expiry.get((last_debuff_target, key), 0) - now
         if rem > 1:
             parts.append("%s:%d" % (badge, int(rem)))
     return " ".join(parts)
@@ -1201,6 +1316,38 @@ def mobs_list(rng):
 
     return mobsTemp
 
+def valid_lighthouse(item):
+    if (sv.get('use_attack_lighthouses') != 1 or sv['activeattack'] != 1 or
+            item is None or item.Deleted or not item.Visible or not item.OnGround or
+            item.Movable or item.ItemID not in LIGHTHOUSE_ITEM_IDS or
+            Player.BuffsExist('Bload Oath (curse)')):
+        return False
+    if not 0 <= Player.DistanceTo(item.Serial) <= sv['attackrange']:
+        return False
+    position = (Player.Position.X, Player.Position.Y, Player.Position.Z,
+                item.Position.X, item.Position.Y, item.Position.Z)
+    if los_rejected_positions.get(item.Serial) == position:
+        return False
+    los_rejected_positions.pop(item.Serial, None)
+    return True
+
+
+def find_lighthouse():
+    global _lighthouse_cache
+    if sv.get('use_attack_lighthouses') != 1 or sv['activeattack'] != 1:
+        return None
+    if not Timer.Check('mage_lighthouse_scan'):
+        fil = Items.Filter()
+        fil.OnGround = 1
+        fil.Movable = 0
+        fil.RangeMax = sv['attackrange']
+        fil.Graphics = List[int](LIGHTHOUSE_ITEM_IDS)
+        _lighthouse_cache = Items.ApplyFilter(fil)
+        Timer.Create('mage_lighthouse_scan', 200)
+    candidates = [item for item in _lighthouse_cache if valid_lighthouse(item)]
+    return min(candidates, key=lambda item: Player.DistanceTo(item.Serial)) if candidates else None
+
+
 def mobs_in_line_of_sight(mobs, rng):
     """Return only candidates currently visible from the player."""
     if not mobs:
@@ -1240,19 +1387,23 @@ def execute_target_confirmed(target):
         return False
     serial = target.Serial if hasattr(target, 'Serial') else target
     Target.TargetExecute(serial)
-    Misc.Pause(100)
+    # Razor clears its local cursor before TargetExecute returns. Only wait
+    # when it remains open; normal casts still get their full recovery below.
+    if Target.HasTarget():
+        Misc.Pause(100)
     if Target.HasTarget():
         # Retry once with the live Mobile overload in case the original wrapper
         # was stale. A successful TargetExecute closes the local cursor.
         live_target = Mobiles.FindBySerial(serial)
         if live_target is not None:
             Target.TargetExecute(live_target)
-            Misc.Pause(100)
+            if Target.HasTarget():
+                Misc.Pause(100)
     consumed = not Target.HasTarget()
     if not consumed:
         # Prevent another function later in this same loop from casting over
         # the still-open cursor. The main-loop barrier will resolve or cancel it.
-        Timer.Create('spells', 250)
+        set_spell_timer(250)
     return consumed
 
 def target_current_visible_hostile(preferred=None):
@@ -1285,7 +1436,7 @@ def target_current_visible_hostile(preferred=None):
         Target.Cancel()
         last_target_wait_failure = time.time()
         last_target_wait_failure_kind = "invalid_target"
-        Timer.Create('spells', 250)
+        set_spell_timer(250)
         return None
 
     remember_offensive_target(target)
@@ -1296,7 +1447,7 @@ def target_current_visible_hostile(preferred=None):
     Target.Cancel()
     last_target_wait_failure = time.time()
     last_target_wait_failure_kind = "invalid_target"
-    Timer.Create('spells', 250)
+    set_spell_timer(250)
     return None
 
 ##################################################################
@@ -1350,9 +1501,12 @@ def classify_cast_failure_entries(entries):
         if "must wait to perform another action" in text:
             action_wait = True
         if ("must wait before trying again" in text or
-                "already in effect" in text):
+                "already in effect" in text or
+                "until the last one has expired" in text):
             spell_cooldown = True
-        if "too far away" in text:
+        if ("too far away" in text or "location is blocked" in text or
+                "path is blocked" in text or "target is dead" in text or
+                "target has died" in text):
             invalid_target = True
         if ("cannot be seen" in text or "cannot see" in text or
                 "can't see" in text or "no line of sight" in text):
@@ -1373,12 +1527,17 @@ def cast_failure_since(pre_cast_time):
     """Return the strongest cast failure reported since this cast began."""
     if last_target_wait_failure >= pre_cast_time:
         return last_target_wait_failure_kind or "failed"
-    try:
-        entries = Journal.GetJournalEntry(pre_cast_time)
-    except Exception:
-        # A concurrent global Journal.Clear must not stop combat.
+    entries = journal_entries_since(pre_cast_time)
+    if entries is None:
         return None
     return classify_cast_failure_entries(entries)
+
+def journal_entries_since(start_time):
+    """Snapshot journal entries, or None if another script rotated it."""
+    try:
+        return list(Journal.GetJournalEntry(start_time))
+    except Exception:
+        return None
 
 def did_fizzle(pre_cast_time):
     """Return True if the server rejected or interrupted this cast."""
@@ -1416,7 +1575,8 @@ def consume_cast_failure():
 def recover_cast_state(reason):
     """Clear script/server cast state without requiring a script restart."""
     global last_cast_failure_check, last_cast_failure_signatures
-    global cast_lock_since, nether_pending_since, pending_cast_cooldown
+    global cast_lock_deadline, nether_pending_deadline, pending_target_cursor
+    global pending_cast_cooldown
     global busy_failure_count, busy_failure_since, last_cast_recovery
     Target.Cancel()
     try:
@@ -1424,37 +1584,60 @@ def recover_cast_state(reason):
     except Exception:
         pass
     # Interrupt performs an equip cycle, so respect its short action lock.
-    Timer.Create('spells', 750)
-    Timer.Create('netherblast_pending', 1)
+    set_spell_timer(750)
+    set_nether_pending_timer(1)
     if pending_cast_cooldown is not None:
         Timer.Create(pending_cast_cooldown, 1)
         pending_cast_cooldown = None
     last_cast_failure_check = time.time()
     last_cast_failure_signatures = set()
-    cast_lock_since = None
-    nether_pending_since = None
+    pending_target_cursor = None
     busy_failure_count = 0
     busy_failure_since = None
     last_cast_recovery = time.time()
     if sv.get('use_messages', 1) == 1:
         Player.HeadMessage(33, "Cast state recovered: %s" % reason)
 
+def release_failed_nether_blast(failure):
+    """Release only a confirmed failure; timeouts still own late cursors."""
+    global pending_target_cursor, pending_cast_cooldown, nether_followup_pending
+    if failure not in ('interrupted', 'busy', 'invalid_target',
+                       'unseen_target', 'spell_cooldown'):
+        return False
+    if pending_target_cursor is not None and pending_target_cursor['kind'] == 'nether':
+        if Target.HasTarget():
+            Target.Cancel()
+        pending_target_cursor = None
+    if pending_cast_cooldown == 'netherblast':
+        pending_cast_cooldown = None
+    nether_followup_pending = False
+    set_nether_pending_timer(1)
+    retry_ms = (1000 if failure in ('busy', 'spell_cooldown') else
+                1 if failure == 'interrupted' else max(250, serverdelay))
+    Timer.Create('netherblast', retry_ms)
+    return True
+
 def apply_cast_failure(failure, preserve_active=False):
     """Synchronize the local spell timer with the server cast state."""
     global pending_cast_cooldown, busy_failure_count, busy_failure_since
     global target_wait_extended_until
     global los_rejected_positions
+    if (pending_cast_cooldown == 'netherblast' or
+            (pending_target_cursor is not None and
+             pending_target_cursor['kind'] == 'nether')):
+        release_failed_nether_blast(failure)
     if failure is not None:
         # Any real server failure enables the longer target allowance for the
         # next casts, including untargeted buffs that failed outside a wait.
         target_wait_extended_until = time.time() + 15.0
-    if failure is not None and pending_cast_cooldown is not None:
+    if (failure is not None and pending_cast_cooldown is not None and
+            not (failure == 'action_wait' and pending_cast_cooldown == 'netherblast')):
         # Untargeted buffs record their normal cooldown immediately. Roll it
         # back if the server rejected/interrupted that cast.
         Timer.Create(pending_cast_cooldown, 1)
         pending_cast_cooldown = None
     if failure == "interrupted":
-        Timer.Create('spells', 1)
+        set_spell_timer(1)
         return True
     if failure == "busy":
         now = time.time()
@@ -1467,14 +1650,14 @@ def apply_cast_failure(failure, preserve_active=False):
             return True
         # One busy response usually means the shard is still finishing the
         # previous cast. Give it a full second; do not hammer another spell.
-        Timer.Create('spells', 1000)
+        set_spell_timer(1000)
         return True
     if failure == "action_wait":
         # Global journal action-lock lines can belong to attacks, items, pets,
         # or another script. They must not recreate a spell lock every loop.
         # Only a rejection consumed inside this cast's target wait delays retry.
         if not preserve_active:
-            Timer.Create('spells', max(250, serverdelay))
+            set_spell_timer(max(250, serverdelay))
         return True
     if failure == "unseen_target":
         if (last_offensive_target_state is not None and
@@ -1483,37 +1666,38 @@ def apply_cast_failure(failure, preserve_active=False):
             los_rejected_positions[serial] = last_offensive_target_state[2:]
             if len(los_rejected_positions) > 100:
                 los_rejected_positions.clear()
-        Timer.Create('spells', 250)
+        set_spell_timer(250)
         return True
     if failure == "invalid_target":
-        Timer.Create('spells', 250)
+        set_spell_timer(250)
         return True
     if failure == "spell_cooldown":
-        Timer.Create('spells', 750)
+        set_spell_timer(750)
         return True
     return False
 
 def cast_state_watchdog():
-    """Recover locks that outlive every legitimate cast in this script."""
-    global cast_lock_since, nether_pending_since
+    """Recover only a single timer lifecycle that missed its deadline."""
+    global cast_lock_deadline, nether_pending_deadline
     now = time.time()
 
     if Timer.Check('spells') == True:
-        if cast_lock_since is None:
-            cast_lock_since = now
-        elif now - cast_lock_since > 6.0:
+        if cast_lock_deadline is None:
+            # Compatibility for a timer started outside the tracked helper.
+            cast_lock_deadline = now + 6.0
+        elif now > cast_lock_deadline:
             recover_cast_state("spell lock")
             return
     else:
-        cast_lock_since = None
+        cast_lock_deadline = None
 
     if Timer.Check('netherblast_pending') == True:
-        if nether_pending_since is None:
-            nether_pending_since = now
-        elif now - nether_pending_since > 8.0:
+        if nether_pending_deadline is None:
+            nether_pending_deadline = now + 5.1
+        elif now > nether_pending_deadline:
             recover_cast_state("Nether Blast")
     else:
-        nether_pending_since = None
+        nether_pending_deadline = None
 
 def release_failed_cast_from_journal():
     """Synchronize the local cast timer when the server reports a failure."""
@@ -1533,35 +1717,121 @@ def create_rollback_cooldown(name, duration):
 _razor_wait_for_target = Target.WaitForTarget
 
 def wait_for_target_responsive(delay, noshow=False):
-    """Wait through lag for a cursor, but abort immediately on a cast failure."""
+    """Wait a caller-selected interval; item/skill waits stay independent."""
     global last_target_wait_failure, last_target_wait_failure_kind
     global target_wait_extended_until
-    # Spell cursor waits use a longer base timeout than item/skill waits. After
-    # any failure/timeout, temporarily allow extra time for a lagging server.
-    if delay >= 4000:
-        if time.time() < target_wait_extended_until:
-            delay = max(delay, 8000)
-        else:
-            delay = max(delay, 6000)
     deadline = time.time() + (delay / 1000.0)
     while True:
+        if time.time() < _mage_inventory_until:
+            reserve_mage_inventory(6000)
         remaining = int((deadline - time.time()) * 1000)
         if remaining <= 0:
             last_target_wait_failure = time.time()
             last_target_wait_failure_kind = "timeout"
             target_wait_extended_until = time.time() + 15.0
-            Timer.Create('spells', 250)
+            set_spell_timer(250)
             return False
         ready = _razor_wait_for_target(min(100, remaining), noshow)
         if ready or Target.HasTarget():
             last_target_wait_failure_kind = None
             return True
         failure = consume_cast_failure()
+        # This journal text is shared by spells, items, skills, and movement.
+        # It does not prove this cast failed, so keep waiting for its cursor.
+        if failure == "action_wait":
+            continue
         if apply_cast_failure(failure):
             last_target_wait_failure = time.time()
             last_target_wait_failure_kind = failure
             target_wait_extended_until = time.time() + 15.0
             return False
+
+def spell_target_wait_ms(spellcasttime, spellweaving=False):
+    """Calculated cast time plus bounded server-lag allowance."""
+    cast_ms = (calc_castspeed_sw(spellcasttime) if spellweaving
+               else calc_castspeed(spellcasttime))
+    lag_allowance = min(1250, max(500, serverdelay * 3))
+    if time.time() < target_wait_extended_until:
+        lag_allowance = min(1500, lag_allowance + 250)
+    return cast_ms + lag_allowance
+
+def _pending_target_data(pre_cast, spellcasttime, kind, target=None,
+                         spellweaving=False, max_pending_ms=None):
+    wait_ms = spell_target_wait_ms(spellcasttime, spellweaving)
+    if max_pending_ms is not None:
+        elapsed_ms = max(0, int((time.time() - pre_cast) * 1000))
+        wait_ms = min(wait_ms, max(1, max_pending_ms - elapsed_ms))
+        deadline = pre_cast + (max_pending_ms / 1000.0)
+    else:
+        deadline = time.time() + (wait_ms / 1000.0) + 0.75
+    data = {'kind': kind, 'deadline': deadline, 'started': pre_cast}
+    if target is not None:
+        if isinstance(target, tuple):
+            data['target'] = target
+        elif hasattr(target, 'Serial'):
+            data['target'] = target.Serial
+        else:
+            data['target'] = target
+    return data, wait_ms
+
+def execute_pending_target():
+    """Consume only the cursor registered by this script's current cast."""
+    global pending_target_cursor
+    data = pending_target_cursor
+    if external_target_reserved() or data is None or not Target.HasTarget():
+        return False
+    kind = data['kind']
+    target = data.get('target')
+    consumed = False
+    if kind == 'hostile':
+        preferred = Mobiles.FindBySerial(target)
+        consumed = target_current_visible_hostile(preferred) is not None
+    elif kind == 'lighthouse':
+        item = Items.FindBySerial(target)
+        if valid_lighthouse(item):
+            remember_offensive_target(item)
+            consumed = execute_target_confirmed(item.Serial)
+        else:
+            Target.Cancel()
+            pending_target_cursor = None
+            set_spell_timer(250)
+    elif kind == 'nether':
+        serial, x, y, z = target
+        place_nether_blast_target(serial, x, y, z)
+        if Target.HasTarget():
+            Misc.Pause(100)
+        consumed = not Target.HasTarget()
+    elif kind in ('ground', 'colossus'):
+        Target.TargetExecute(target[0], target[1], target[2])
+        if Target.HasTarget():
+            Misc.Pause(100)
+        consumed = not Target.HasTarget()
+    elif kind == 'relative':
+        Target.TargetExecuteRelative(target[0], target[1])
+        if Target.HasTarget():
+            Misc.Pause(100)
+        consumed = not Target.HasTarget()
+    else:
+        consumed = execute_target_confirmed(target)
+    if consumed:
+        pending_target_cursor = None
+    return consumed
+
+def wait_for_spell_target(pre_cast, spellcasttime, kind, target=None,
+                          spellweaving=False, max_pending_ms=None):
+    """Wait for and consume this cast's cursor, retaining late ownership."""
+    global pending_target_cursor, pending_cast_cooldown
+    if kind != 'nether' and pending_cast_cooldown == 'netherblast':
+        # A later targeted spell owns its own rejection, not Nether Blast's.
+        pending_cast_cooldown = None
+    pending_target_cursor, wait_ms = _pending_target_data(
+        pre_cast, spellcasttime, kind, target, spellweaving, max_pending_ms)
+    ready = wait_for_target_responsive(wait_ms, True)
+    if ready or Target.HasTarget():
+        return execute_pending_target()
+    if last_target_wait_failure_kind != "timeout":
+        pending_target_cursor = None
+    return False
 
 def is_cardinal_or_diagonal(mob):
     """Returns True if mob is on the same X-axis, Y-axis, or a 45° diagonal from the player."""
@@ -1742,7 +2012,6 @@ def refresh_gear_cache():
     _cached_fcr     = min(6, Player.FasterCastRecovery)
     _cached_castpause = max(((6 - _cached_fcr) * 250) + serverdelay, serverdelay)
     _cached_slayer  = equipped_slayer()
-    refresh_slayer_books()
 
 _cached_slayer = None
 
@@ -1841,7 +2110,7 @@ def _equip_book(serial):
     Player.EquipItem(serial)
     Misc.Pause(600)
     # Equipping uses the server action lock. Do not cast during its remainder.
-    Timer.Create('spells', 750)
+    set_spell_timer(750)
 
 def _target_slayer_group(mob):
     """Best slayer group in registry for this mob, or None."""
@@ -1858,6 +2127,7 @@ def _target_slayer_group(mob):
 def process_slayer_swap(target=None):
     """Manual swap requests (from Mage GUMP) + auto-swap to match target.
     Never swaps mid-cast."""
+    global _slayer_books_dirty
     if Timer.Check('spells') == True or Player.Paralized:
         return
     # Manual request — always honored, even with auto-swap off
@@ -1872,6 +2142,11 @@ def process_slayer_swap(target=None):
     # Auto-swap
     if sv.get('use_slayer_autoswap', 0) != 1 or target is None:
         return
+    if (_slayer_books_dirty or
+            Timer.Check('slayer_book_cache') == False):
+        refresh_slayer_books()
+        _slayer_books_dirty = False
+        Timer.Create('slayer_book_cache', 30000)
     if Timer.Check('slayer_swap') == True:
         return
     group = _target_slayer_group(target)
@@ -1896,14 +2171,18 @@ def longalarm():
         winsound.Beep(1000, 800)
 
 def legendarycheck():
+    """Alert for rare pet spawns and tell the caller to block combat."""
     if sv['use_checkforlegendaries'] == 1:
         if Journal.Search("you sense a legendary") or Journal.Search("senses a legendary"):
             Player.HeadMessage(20, "Legendary pet around!")
             Player.HeadMessage(20, "Legendary pet around!")
             longalarm()
+            return True
         elif Journal.Search("a curious creature apparates nearby"):
             Player.HeadMessage(40, "Astral Pet around!")
             longalarm()
+            return True
+    return False
 
 def trappedcrate():
     if (sv['use_trappedcrate'] == 0 or not Player.BuffsExist("Paralyze") or
@@ -1914,7 +2193,7 @@ def trappedcrate():
         Player.HeadMessage(50, "Use trapped crate!")
         Items.UseItem(tc)
         Timer.Create('trappedcrate', 1000)
-        Timer.Create('spells', 750)
+        set_spell_timer(750)
     else:
         Player.HeadMessage(20, "No trapped crate!")
 
@@ -1922,7 +2201,7 @@ def dresslist():
     if sv['use_dresslist'] == 1 and Timer.Check('dress') == False:
         Dress.DressFStart()
         Timer.Create('dress', 2500)
-        Timer.Create('spells', 750)
+        set_spell_timer(750)
 
 def check_townbuff():
     if sv['use_townbuff'] == 1 and Timer.Check("towncheck") == False:
@@ -1959,7 +2238,7 @@ def checkweight():
                     Items.UseItem(bag)
                     if wait_for_target_responsive(4000, True):
                         Target.TargetExecute(gold)
-                    Timer.Create('spells', 750)
+                    set_spell_timer(750)
                     Misc.Pause(100)
             if Timer.Check("bagofsending") == False:
                 charges = Items.GetPropValue(bag, "Charges")
@@ -1979,38 +2258,47 @@ def auto_heal():
     threshold = sv['heal_threshold'] / 100.0
     if Player.Hits > Player.HitsMax * threshold:
         return False
-    # Greater Heal only when below 50% HP; otherwise use the smaller Heal
-    if Player.Hits <= Player.HitsMax * 0.5 and Player.Mana >= mana_cost(20) and skill_value('Magery') >= 60:
-        if sv['use_cleansingwinds'] == 1:
+    # At critical HP, prefer Cleansing Winds only when this character can cast
+    # it; otherwise fall back to an independently eligible Magery heal.
+    if Player.Hits <= Player.HitsMax * 0.5:
+        if (sv['use_cleansingwinds'] == 1 and
+                Player.Mana >= mana_cost(20) and
+                skill_value('Mysticism') >= 58):
             if sv['use_messages'] == 1:
-                Player.HeadMessage(68, "Cleansing Winds (cure)!")
+                Player.HeadMessage(68, "Cleansing Winds!")
             pre_cast = time.time()
             Spells.CastMysticism("Cleansing Winds")
-        else:
+            target_ready = wait_for_spell_target(
+                pre_cast, 2250, 'self', Player.Serial)
+        elif (Player.Mana >= mana_cost(11) and
+              skill_value('Magery') >= 24.1):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Greater Heal!")
             pre_cast = time.time()
             Spells.CastMagery("Greater Heal")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1750, 'self', Player.Serial)
+        elif Player.Mana >= mana_cost(4):
+            if sv['use_messages'] == 1:
+                Player.HeadMessage(68, "Heal!")
+            pre_cast = time.time()
+            Spells.CastMagery("Heal")
+            target_ready = wait_for_spell_target(
+                pre_cast, 1000, 'self', Player.Serial)
+        else:
+            return False
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
         return True
     elif Player.Mana >= mana_cost(4):
-#        if sv['use_cleansingwinds'] == 1:
-#            if sv['use_messages'] == 1:
-#                Player.HeadMessage(68, "Cleansing Winds (cure)!")
-#            pre_cast = time.time()
-#            Spells.CastMysticism("Cleansing Winds")
-#        else:
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Heal!")
         pre_cast = time.time()
         Spells.CastMagery("Heal")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 1000, 'self', Player.Serial)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
         return True
     return False
 
@@ -2022,39 +2310,42 @@ def auto_cure():
         return False
 
     # Emergency Cure is always allowed, independent of the use_cure toggle.
-    if Player.Hits <= Player.HitsMax * 0.5 and Player.Mana >= mana_cost(9):
+    if (Player.Hits <= Player.HitsMax * 0.5 and
+            Player.Mana >= mana_cost(6) and skill_value('Magery') >= 0.1):
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Cure!")
         pre_cast = time.time()
         Spells.CastMagery("Cure")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 1250, 'self', Player.Serial)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
         return True
 
-    # Arch Cure (C6): cures all poison types including Greater and Deadly.
-    if sv['use_cure'] == 1 and Player.Mana >= mana_cost(20) and skill_value('Magery') >= 50:
+    # Arch Cure (C4): cures all poison types including Greater and Deadly.
+    if (sv['use_cure'] == 1 and Player.Mana >= mana_cost(11) and
+            skill_value('Magery') >= 24.1):
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Arch Cure!")
         pre_cast = time.time()
         Spells.CastMagery("Arch Cure")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 1750, 'self', Player.Serial)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
         return True
 
     # Cleansing Winds is the final fallback and also removes many debuffs.
-    if sv['use_cleansingwinds'] == 1 and Player.Mana >= mana_cost(20) and skill_value('Mysticism') >= 51:
+    if (sv['use_cleansingwinds'] == 1 and Player.Mana >= mana_cost(20) and
+            skill_value('Mysticism') >= 58):
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Cleansing Winds (cure)!")
         pre_cast = time.time()
         Spells.CastMysticism("Cleansing Winds")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 2250, 'self', Player.Serial)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
         return True
     return False
 
@@ -2062,7 +2353,7 @@ def cleansing_winds():
     """Cast Cleansing Winds when player is cursed or has harmful debuffs."""
     if sv['use_cleansingwinds'] == 0 or Timer.Check('spells') == True or Player.Paralized:
         return False
-    if Player.Mana < mana_cost(20) or skill_value('Mysticism') < 51:
+    if Player.Mana < mana_cost(20) or skill_value('Mysticism') < 58:
         return False
     cursed = (Player.BuffsExist("Curse") or Player.BuffsExist("Evil Omen") or
               Player.BuffsExist("Corpse Skin") or Player.BuffsExist("Strangle") or
@@ -2073,10 +2364,10 @@ def cleansing_winds():
             Player.HeadMessage(68, "Cleansing Winds!")
         pre_cast = time.time()
         Spells.CastMysticism("Cleansing Winds")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 2250, 'self', Player.Serial)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
         return True
     return False
 
@@ -2088,7 +2379,7 @@ def keep_magic_reflect():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Magic Reflect!")
             Spells.CastMagery("Magic Reflection")
-            Timer.Create('spells', calc_castspeed(2000) + calc_castpause())
+            set_spell_timer(calc_castspeed(2000) + calc_castpause())
             create_rollback_cooldown("magicreflect", 120000)
 
 def keep_reactive_armor():
@@ -2099,7 +2390,7 @@ def keep_reactive_armor():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Reactive Armor!")
             Spells.CastMagery("Reactive Armor")
-            Timer.Create('spells', calc_castspeed(1000) + calc_castpause())
+            set_spell_timer(calc_castspeed(1000) + calc_castpause())
             create_rollback_cooldown("reactivearmor", 120000)
 
 def keep_protection():
@@ -2110,7 +2401,7 @@ def keep_protection():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Protection!")
             Spells.CastMagery("Protection")
-            Timer.Create('spells', calc_castspeed(1250) + calc_castpause())
+            set_spell_timer(calc_castspeed(1250) + calc_castpause())
             create_rollback_cooldown("protection", 120000)
 
 def keep_bless():
@@ -2124,10 +2415,10 @@ def keep_bless():
             Player.HeadMessage(68, "Bless!")
         pre_cast = time.time()
         Spells.CastMagery("Bless")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(Player.Serial)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 1500, 'self', Player.Serial)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
             # Bless lasts ~90-120s. Re-check after 60s to avoid spamming.
             Timer.Create("bless", 60000)
 
@@ -2146,10 +2437,9 @@ def bless_pets():
             Player.HeadMessage(68, "Bless: %s!" % pet.Name)
         pre_cast = time.time()
         Spells.CastMagery("Bless")
-        wait_for_target_responsive(4000, True)
-        Target.TargetExecute(pet)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(pre_cast, 1500, 'mobile', pet)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
             Timer.Create(bls_key, 144000)
         return
 
@@ -2161,7 +2451,7 @@ def attune_weapon():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Attune Weapon!")
             Spells.CastSpellweaving("Attune Weapon")
-            Timer.Create('spells', calc_castspeed_sw(1000) + calc_castpause())
+            set_spell_timer(calc_castspeed_sw(1000) + calc_castpause())
             create_rollback_cooldown("attuneweapon", 120000)
 
 def gift_of_life():
@@ -2173,10 +2463,10 @@ def gift_of_life():
                 Player.HeadMessage(68, "Gift of Life!")
             pre_cast = time.time()
             Spells.CastSpellweaving("Gift of Life")
-            wait_for_target_responsive(4000, True)
-            Target.Self()
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 3000, 'self', Player.Serial, True)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
 
 
 def gift_of_renewal():
@@ -2190,13 +2480,13 @@ def gift_of_renewal():
             Timer.Create("giftofrenewal", 180000)
             pre_cast = time.time()
             Spells.CastSpellweaving("Gift of Renewal")
-            target_ready = wait_for_target_responsive(4000, True)
+            target_ready = wait_for_spell_target(
+                pre_cast, 3000, 'self', Player.Serial, True)
             if target_ready:
-                Target.Self()
                 Misc.Pause(max(250, serverdelay))
             failure = cast_failure_since(pre_cast)
             if target_ready and failure is None:
-                Timer.Create('spells', calc_castpause())
+                set_spell_timer(calc_castpause())
                 Timer.Create("giftofrenewal", 180000)
             elif failure == "spell_cooldown":
                 Timer.Create("giftofrenewal", 180000)
@@ -2210,7 +2500,7 @@ def keep_mana_shield():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Mana Shield!")
             Spells.CastMastery("Mana Shield")
-            Timer.Create('spells', calc_castspeed_sw(2250) + calc_castpause())
+            set_spell_timer(calc_castspeed_sw(2250) + calc_castpause())
             create_rollback_cooldown("mana_shield", 120000)
 
 def keep_mystic_weapon():
@@ -2222,7 +2512,7 @@ def keep_mystic_weapon():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Mystic Weapon!")
             Spells.CastMastery("Mystic Weapon")
-            Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+            set_spell_timer(calc_castspeed(2250) + calc_castpause())
             create_rollback_cooldown("mystic_weapon", 120000)
 
 def has_arcane_empowerment():
@@ -2234,16 +2524,18 @@ def has_arcane_empowerment():
 def arcane_empowerment():
     """SW: Arcane Empowerment — boosts spell damage and healing. Keep active."""
     if sv['use_arcaneempowerment'] == 0 or Timer.Check('spells') == True or Player.Paralized:
-        return
+        return False
     if not has_arcane_empowerment() and Timer.Check("arcaneempowerment") == False:
         if Player.Mana >= mana_cost(50) and skill_value('Spellweaving') >= 24:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Arcane Empowerment!")
             Spells.CastSpellweaving("Arcane Empowerment")
-            Timer.Create('spells', calc_castspeed_sw(3000) + calc_castpause())
+            set_spell_timer(calc_castspeed_sw(3000) + calc_castpause())
             # Short retry throttle. BuffsExist prevents recasting while active;
             # a failed/expired buff must not block summons for two minutes.
             create_rollback_cooldown("arcaneempowerment", 5000)
+            return True
+    return False
 
 def keep_reaper_form():
     """SW: Reaper Form — transforms into a reaper, boosting spellweaving spell damage."""
@@ -2256,7 +2548,7 @@ def keep_reaper_form():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Reaper Form!")
             Spells.CastSpellweaving("Reaper Form")
-            Timer.Create('spells', calc_castspeed_sw(3000) + calc_castpause())
+            set_spell_timer(calc_castspeed_sw(3000) + calc_castpause())
             create_rollback_cooldown("reaperform", 120000)
 
 def keep_wraith_form():
@@ -2270,7 +2562,7 @@ def keep_wraith_form():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Wraith Form!")
             Spells.CastNecro("Wraith Form")
-            Timer.Create('spells', calc_castspeed(2000) + calc_castpause())
+            set_spell_timer(calc_castspeed(2000) + calc_castpause())
             create_rollback_cooldown("wraithform", 120000)
 
 def keep_lich_form():
@@ -2284,7 +2576,7 @@ def keep_lich_form():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Lich Form!")
             Spells.CastNecro("Lich Form")
-            Timer.Create('spells', calc_castspeed(2000) + calc_castpause())
+            set_spell_timer(calc_castspeed(2000) + calc_castpause())
             create_rollback_cooldown("lichform", 120000)
 
 def keep_vampiric_embrace():
@@ -2298,7 +2590,7 @@ def keep_vampiric_embrace():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Vampiric Embrace!")
             Spells.CastNecro("Vampiric Embrace")
-            Timer.Create('spells', calc_castspeed(2000) + calc_castpause())
+            set_spell_timer(calc_castspeed(2000) + calc_castpause())
             create_rollback_cooldown("vampiricembrace", 120000)
 
 def keep_stone_form():
@@ -2312,7 +2604,7 @@ def keep_stone_form():
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Stone Form!")
             Spells.CastMysticism("Stone Form")
-            Timer.Create('spells', calc_castspeed(1750) + calc_castpause())
+            set_spell_timer(calc_castspeed(1750) + calc_castpause())
             create_rollback_cooldown("stoneform", 120000)
 
 ##################################################################
@@ -2337,28 +2629,20 @@ def apply_debuffs(nearest, nearby_count=1):
     if low_mana():
         return False
 
-    # Reset debuff cooldowns when switching to a new target
-    if nearest.Serial != last_debuff_target:
-        last_debuff_target = nearest.Serial
-        for t in ['debuff_evil_omen', 'debuff_curse', 'debuff_corpse_skin',
-                  'debuff_strangle', 'debuff_mind_rot', 'debuff_poison',
-                  'debuff_command_undead', 'debuff_conduit',
-                  'debuff_sleep', 'debuff_mass_sleep', 'debuff_paralyze', 'debuff_mana_vampire']:
-            Timer.Create(t, 1)
-            debuff_expiry.pop(t, None)
+    last_debuff_target = nearest.Serial
 
     # Command Undead — Necromancy mastery (3000ms, req. 90 real Necromancy)
-    if sv['use_command_undead'] == 1 and Timer.Check('debuff_command_undead') == False:
+    if sv['use_command_undead'] == 1 and debuff_ready('debuff_command_undead'):
         if Player.Mana >= mana_cost(30) and real_skill_value('Necromancy') >= 90:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Command Undead!")
             pre_cast = time.time()
             Spells.CastMastery("Command Undead")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-                Timer.Create('debuff_command_undead', 30000)
+            target_ready = wait_for_spell_target(
+                pre_cast, 3000, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+                track_debuff('debuff_command_undead', 30000)
             return True
 
     # Conduit — Necromancy mastery (2250ms, self-centered, req. 90 real Necromancy)
@@ -2367,151 +2651,151 @@ def apply_debuffs(nearest, nearby_count=1):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Conduit!")
             Spells.CastMastery("Conduit")
-            Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+            set_spell_timer(calc_castspeed(2250) + calc_castpause())
             create_rollback_cooldown('debuff_conduit', 30000)
             return True
 
     # Evil Omen: cast before each main attack spell (empowers next harmful spell, Necro req. 20)
-    if sv['use_evil_omen'] == 1 and Timer.Check('debuff_evil_omen') == False:
+    if sv['use_evil_omen'] == 1 and debuff_ready('debuff_evil_omen'):
         if Player.Mana >= mana_cost(11) and skill_value('Necromancy') >= 20:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Evil Omen!")
             pre_cast = time.time()
             Spells.CastNecro("Evil Omen")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1000, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 if sv.get('use_nuke_cascade', 1) == 1:
                     nuke_cascade_until = time.time() + (3.0 if get_mob_tier(nearest) == 'boss' else 1.5)
                 track_debuff('debuff_evil_omen', 6000)
             return True
 
     # Curse: reduces all stats (Magery C4 = 1750ms, req. skill 20)
-    if sv['use_curse'] == 1 and Timer.Check('debuff_curse') == False:
+    if sv['use_curse'] == 1 and debuff_ready('debuff_curse'):
         if Player.Mana >= mana_cost(20) and skill_value('Magery') >= 20:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Curse!")
             pre_cast = time.time()
             Spells.CastMagery("Curse")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1750, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_curse', 55000)
             return True
 
     # Corpse Skin: lowers fire & poison resistance (Necro req. 20)
-    if sv['use_corpse_skin'] == 1 and Timer.Check('debuff_corpse_skin') == False:
+    if sv['use_corpse_skin'] == 1 and debuff_ready('debuff_corpse_skin'):
         if Player.Mana >= mana_cost(11) and skill_value('Necromancy') >= 20:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Corpse Skin!")
             pre_cast = time.time()
             Spells.CastNecro("Corpse Skin")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 if sv.get('use_nuke_cascade', 1) == 1:
                     nuke_cascade_until = time.time() + (3.0 if get_mob_tier(nearest) == 'boss' else 1.5)
                 track_debuff('debuff_corpse_skin', 25000)
             return True
 
     # Strangle: damage over time (Necro req. 65)
-    if sv['use_strangle'] == 1 and Timer.Check('debuff_strangle') == False:
+    if sv['use_strangle'] == 1 and debuff_ready('debuff_strangle'):
         if Player.Mana >= mana_cost(29) and skill_value('Necromancy') >= 65:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Strangle!")
             pre_cast = time.time()
             Spells.CastNecro("Strangle")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_strangle', 15000)
             return True
 
     # Mind Rot: increases mana costs — very effective vs mage and caster mobs (Necro req. 30)
-    if sv['use_mind_rot'] == 1 and Timer.Check('debuff_mind_rot') == False:
+    if sv['use_mind_rot'] == 1 and debuff_ready('debuff_mind_rot'):
         if Player.Mana >= mana_cost(17) and skill_value('Necromancy') >= 30:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Mind Rot!")
             pre_cast = time.time()
             Spells.CastNecro("Mind Rot")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_mind_rot', 25000)
             return True
 
     # Poison (Magery C3 = 1500ms)
-    if sv['use_poison'] == 1 and Timer.Check('debuff_poison') == False:
+    if sv['use_poison'] == 1 and debuff_ready('debuff_poison'):
         if Player.Mana >= mana_cost(9):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Poison!")
             pre_cast = time.time()
             Spells.CastMagery("Poison")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_poison', 20000)
             return True
 
     # Paralyze — Magery C6: freezes target in place (req. 50 Magery)
-    if sv['use_paralyze'] == 1 and Timer.Check('debuff_paralyze') == False:
+    if sv['use_paralyze'] == 1 and debuff_ready('debuff_paralyze'):
         if Player.Mana >= mana_cost(20) and skill_value('Magery') >= 50:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Paralyze!")
             pre_cast = time.time()
             Spells.CastMagery("Paralyze")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2250, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_paralyze', 8000)
             return True
 
     # Sleep — Mysticism C2: puts target to sleep (broken by damage)
-    if sv['use_sleep'] == 1 and Timer.Check('debuff_sleep') == False:
+    if sv['use_sleep'] == 1 and debuff_ready('debuff_sleep'):
         if Player.Mana >= mana_cost(9):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Sleep!")
             pre_cast = time.time()
             Spells.CastMysticism("Sleep")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1250, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_sleep', 10000)
             return True
 
     # Mass Sleep — Mysticism C5: AoE sleep around target (req. 50 Mysticism, 2+ mobs)
-    if sv['use_mass_sleep'] == 1 and Timer.Check('debuff_mass_sleep') == False and nearby_count >= 2:
+    if sv['use_mass_sleep'] == 1 and debuff_ready('debuff_mass_sleep') and nearby_count >= 2:
         if Player.Mana >= mana_cost(20) and skill_value('Mysticism') >= 50:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Mass Sleep!")
             pre_cast = time.time()
             Spells.CastMysticism("Mass Sleep")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2000, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_mass_sleep', 10000)
             return True
 
     # Mana Vampire — Magery C7: drains mana from target (req. 60 Magery)
-    if sv['use_mana_vampire'] == 1 and Timer.Check('debuff_mana_vampire') == False:
+    if sv['use_mana_vampire'] == 1 and debuff_ready('debuff_mana_vampire'):
         if Player.Mana >= mana_cost(40) and skill_value('Magery') >= 60:
             if sv['use_messages'] == 1:
                 Player.HeadMessage(90, "Mana Vampire!")
             pre_cast = time.time()
             Spells.CastMagery("Mana Vampire")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
                 track_debuff('debuff_mana_vampire', 20000)
             return True
 
@@ -2546,7 +2830,7 @@ def bard_resilience():
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Resilience!")
         Spells.CastMastery("Resilience")
-        Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+        set_spell_timer(calc_castspeed(2250) + calc_castpause())
         create_rollback_cooldown("bard_resilience", 120000)
 
 def bard_perseverance():
@@ -2557,7 +2841,7 @@ def bard_perseverance():
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Perseverance!")
         Spells.CastMastery("Perseverance")
-        Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+        set_spell_timer(calc_castspeed(2250) + calc_castpause())
         create_rollback_cooldown("bard_perseverance", 120000)
 
 def bard_inspire():
@@ -2568,7 +2852,7 @@ def bard_inspire():
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Inspire!")
         Spells.CastMastery("Inspire")
-        Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+        set_spell_timer(calc_castspeed(2250) + calc_castpause())
         create_rollback_cooldown("bard_inspire", 120000)
 
 def bard_invigorate():
@@ -2579,7 +2863,7 @@ def bard_invigorate():
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Invigorate!")
         Spells.CastMastery("Invigorate")
-        Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+        set_spell_timer(calc_castspeed(2250) + calc_castpause())
         create_rollback_cooldown("bard_invigorate", 120000)
 
 def apply_bard(nearest, victims, victims_dist):
@@ -2590,7 +2874,9 @@ def apply_bard(nearest, victims, victims_dist):
         auto_cure()
         return False
 
-    has_instrument = get_instrument() is not None
+    has_instrument = (any(sv[key] == 1 for key in (
+        'use_area_peace', 'use_discordance', 'use_peace', 'use_provocation'))
+        and get_instrument() is not None)
 
     # Area Peace — self-centered, uses bard timer
     if sv['use_area_peace'] == 1 and has_instrument and Timer.Check('bard_area_peace') == False and Timer.Check('bard') == False:
@@ -2603,7 +2889,7 @@ def apply_bard(nearest, victims, victims_dist):
         Timer.Create('bard', 1500)
         if target_ready:
             Timer.Create('bard_area_peace', 12000)
-        Timer.Create('spells', 750)
+        set_spell_timer(750)
         return True
 
     # Discordance — reduces mob skills/stats
@@ -2617,7 +2903,7 @@ def apply_bard(nearest, victims, victims_dist):
         Timer.Create('bard', 1500)
         if target_ready:
             Timer.Create('bard_discord', 12000)
-        Timer.Create('spells', 750)
+        set_spell_timer(750)
         return True
 
     # Peacemaking — single target; skip if Discordance is active (mutex)
@@ -2631,7 +2917,7 @@ def apply_bard(nearest, victims, victims_dist):
         Timer.Create('bard', 1500)
         if target_ready:
             Timer.Create('bard_peace', 12000)
-        Timer.Create('spells', 750)
+        set_spell_timer(750)
         return True
 
     # Provocation — needs 2+ mobs; provokes mob2 to attack mob1
@@ -2653,7 +2939,7 @@ def apply_bard(nearest, victims, victims_dist):
             Timer.Create('bard', 1500)
             if first_ready and second_ready:
                 Timer.Create('bard_provo', 12000)
-            Timer.Create('spells', 750)
+            set_spell_timer(750)
             return True
 
     # Tribulation — Bard Mastery targeted debuff (uses spells timer)
@@ -2662,10 +2948,10 @@ def apply_bard(nearest, victims, victims_dist):
             Player.HeadMessage(68, "Tribulation!")
         pre_cast = time.time()
         Spells.CastMastery("Tribulation")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 2250, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
             Timer.Create('bard_tribulation', 15000)
         return True
 
@@ -2675,10 +2961,10 @@ def apply_bard(nearest, victims, victims_dist):
             Player.HeadMessage(68, "Despair!")
         pre_cast = time.time()
         Spells.CastMastery("Despair")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 2250, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
             Timer.Create('bard_despair', 15000)
         return True
 
@@ -2722,31 +3008,35 @@ def heal_pets():
                 if target_ready:
                     Target.TargetExecute(pet)
                     Timer.Create(bandage_key, 5000)
-                Timer.Create('spells', 750)
+                set_spell_timer(750)
                 return
         # Magery: Greater Heal (option 2 or 4)
         if option in (2, 4):
-            if Timer.Check('spells') == False and Player.Mana >= mana_cost(20):
+            if (Timer.Check('spells') == False and
+                    Player.Mana >= mana_cost(11) and
+                    skill_value('Magery') >= 24.1):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(68, "Greater Heal: %s!" % pet.Name)
                 pre_cast = time.time()
                 Spells.CastMagery("Greater Heal")
-                wait_for_target_responsive(4000, True)
-                Target.TargetExecute(pet)
-                if not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                target_ready = wait_for_spell_target(
+                    pre_cast, 1750, 'mobile', pet)
+                if target_ready and not did_fizzle(pre_cast):
+                    set_spell_timer(calc_castpause())
                 return
         # Mysticism: Cleansing Winds (option 3)
         if option == 3:
-            if Timer.Check('spells') == False and Player.Mana >= mana_cost(20):
+            if (Timer.Check('spells') == False and
+                    Player.Mana >= mana_cost(20) and
+                    skill_value('Mysticism') >= 58):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(68, "Cleansing Winds: %s!" % pet.Name)
                 pre_cast = time.time()
                 Spells.CastMysticism("Cleansing Winds")
-                wait_for_target_responsive(4000, True)
-                Target.TargetExecute(pet)
-                if not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2250, 'mobile', pet)
+                if target_ready and not did_fizzle(pre_cast):
+                    set_spell_timer(calc_castpause())
                 return
         return  # only heal one pet per cycle
 
@@ -2770,31 +3060,35 @@ def cure_pets():
                 if target_ready:
                     Target.TargetExecute(pet)
                     Timer.Create(bandage_key, 5000)
-                Timer.Create('spells', 750)
+                set_spell_timer(750)
                 return
         # Magery: Arch Cure (option 2 or 4)
         if option in (2, 4):
-            if Timer.Check('spells') == False and Player.Mana >= mana_cost(20):
+            if (Timer.Check('spells') == False and
+                    Player.Mana >= mana_cost(11) and
+                    skill_value('Magery') >= 24.1):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(68, "Arch Cure: %s!" % pet.Name)
                 pre_cast = time.time()
                 Spells.CastMagery("Arch Cure")
-                wait_for_target_responsive(4000, True)
-                Target.TargetExecute(pet)
-                if not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                target_ready = wait_for_spell_target(
+                    pre_cast, 1750, 'mobile', pet)
+                if target_ready and not did_fizzle(pre_cast):
+                    set_spell_timer(calc_castpause())
                 return
         # Mysticism: Cleansing Winds (option 3)
         if option == 3:
-            if Timer.Check('spells') == False and Player.Mana >= mana_cost(20):
+            if (Timer.Check('spells') == False and
+                    Player.Mana >= mana_cost(20) and
+                    skill_value('Mysticism') >= 58):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(68, "Cleansing Winds (cure): %s!" % pet.Name)
                 pre_cast = time.time()
                 Spells.CastMysticism("Cleansing Winds")
-                wait_for_target_responsive(4000, True)
-                Target.TargetExecute(pet)
-                if not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2250, 'mobile', pet)
+                if target_ready and not did_fizzle(pre_cast):
+                    set_spell_timer(calc_castpause())
                 return
         return  # only cure one pet per cycle
 
@@ -2815,13 +3109,13 @@ def pet_gift_of_life():
             Timer.Create(gol_key, 5000)
             pre_cast = time.time()
             Spells.CastSpellweaving("Gift of Life")
-            target_ready = wait_for_target_responsive(4000, True)
+            target_ready = wait_for_spell_target(
+                pre_cast, 3000, 'mobile', pet, True)
             if target_ready:
-                Target.TargetExecute(pet)
                 Misc.Pause(max(250, serverdelay))
             failure = cast_failure_since(pre_cast)
             if target_ready and failure is None:
-                Timer.Create('spells', calc_castpause())
+                set_spell_timer(calc_castpause())
                 Timer.Create(gol_key, 90000)
             elif failure == "spell_cooldown":
                 Timer.Create(gol_key, 30000)
@@ -2860,20 +3154,16 @@ def pet_gift_of_renewal():
     pending_pet_gor_serial = closest.Serial
     pre_cast = time.time()
     pending_pet_gor_started = pre_cast
-    Timer.Create('spells', calc_castspeed_sw(3000) + calc_castpause())
+    set_spell_timer(calc_castspeed_sw(3000) + calc_castpause())
     Spells.CastSpellweaving("Gift of Renewal")
-    target_ready = wait_for_target_responsive(4000, True)
-    if target_ready:
-        target_ready = execute_target_confirmed(closest)
-    elif Target.HasTarget():
-        # A cursor that arrived on the final poll still belongs to this cast.
-        target_ready = execute_target_confirmed(closest)
+    target_ready = wait_for_spell_target(
+        pre_cast, 3000, 'mobile', closest, True)
     failure = cast_failure_since(pre_cast)
     target_rejected = failure in (
         "busy", "interrupted", "invalid_target", "unseen_target",
         "spell_cooldown", "timeout")
     if target_ready and not target_rejected:
-        Timer.Create('spells', calc_castpause())
+        set_spell_timer(calc_castpause())
         Timer.Create('pet_giftofrenewal', 180000)
         Misc.SetSharedValue('mw_pet_gor_next_attempt', time.time() + 180.0)
         pending_pet_gor_serial = 0
@@ -2894,14 +3184,49 @@ def pet_gift_of_renewal():
 
 def resolve_orphan_target_cursor():
     """Resolve a cursor left after a synchronous cast; block all new casts."""
-    global pending_pet_gor_serial, pending_pet_gor_started
+    global pending_pet_gor_serial, pending_pet_gor_started, pending_target_cursor
+    global _colossus_tile_idx, guardme_pending, nether_followup_pending
+    global pending_cast_cooldown
+    if external_target_reserved():
+        return True
+    if pending_target_cursor is not None:
+        data = pending_target_cursor
+        if time.time() >= data['deadline']:
+            if Target.HasTarget():
+                Target.Cancel()
+            pending_target_cursor = None
+            set_spell_timer(250)
+            return True
+        if Target.HasTarget():
+            if execute_pending_target():
+                if data['kind'] == 'colossus':
+                    _colossus_tile_idx = 0
+                    Timer.Create('colossus_confirmation', 2000)
+                    Timer.Create('guardme_delay', 2000)
+                    guardme_pending = True
+                    set_spell_timer(max(750, calc_castpause()))
+                else:
+                    if data['kind'] == 'nether':
+                        pending_cast_cooldown = 'netherblast'
+                        set_nether_pending_timer(1)
+                        nether_followup_pending = True
+                    set_spell_timer(calc_castpause())
+            elif not Target.HasTarget():
+                # Target helper cancelled a definitively invalid cursor.
+                pending_target_cursor = None
+            return True
+        if time.time() < data['deadline']:
+            set_spell_timer(250)
+            return True
+        pending_target_cursor = None
+
     if not Target.HasTarget():
         # An unrelated action-wait can arrive while Gift is still casting.
         # Keep ownership briefly so a late legitimate cursor is targeted, not
         # mistaken for an orphan or followed by another spell.
         if (pending_pet_gor_serial and
                 time.time() - pending_pet_gor_started < 6.0):
-            Timer.Create('spells', 250)
+            set_spell_timer(250)
             return True
         pending_pet_gor_serial = 0
         pending_pet_gor_started = 0.0
@@ -2917,7 +3242,7 @@ def resolve_orphan_target_cursor():
                 Timer.Create('pet_giftofrenewal', cooldown)
                 Misc.SetSharedValue('mw_pet_gor_next_attempt',
                                     time.time() + (cooldown / 1000.0))
-                Timer.Create('spells', calc_castpause())
+                set_spell_timer(calc_castpause())
                 pending_pet_gor_serial = 0
                 pending_pet_gor_started = 0.0
                 return True
@@ -2926,7 +3251,7 @@ def resolve_orphan_target_cursor():
     # cursor visible at the top of the main loop is orphaned and must not coexist
     # with another Spells.Cast* call.
     Target.Cancel()
-    Timer.Create('spells', 250)
+    set_spell_timer(250)
     if pending_pet_gor_serial:
         Timer.Create('pet_giftofrenewal', 180000)
         Misc.SetSharedValue('mw_pet_gor_next_attempt', time.time() + 180.0)
@@ -2955,10 +3280,10 @@ def cast_explosion_combo(nearest):
     # Cast Explosion — do NOT set spells timer yet
     pre_cast = time.time()
     Spells.CastMagery("Explosion")
-    wait_for_target_responsive(4000, True)
-    target_current_visible_hostile(nearest)
-    if did_fizzle(pre_cast):
-        Timer.Create('spells', calc_castpause())
+    target_ready = wait_for_spell_target(
+        pre_cast, 2250, 'hostile', nearest)
+    if not target_ready or did_fizzle(pre_cast):
+        set_spell_timer(calc_castpause())
         return True
     # Respect current FCR and server delay before starting the follow-up.
     Misc.Pause(calc_castpause())
@@ -2966,34 +3291,105 @@ def cast_explosion_combo(nearest):
     followup_cast = time.time()
     if followup == 'flamestrike' and skill_value('Magery') >= 60:
         Spells.CastMagery("Flame Strike")
+        followup_cast_ms = 2500
     elif followup == 'mindblast' and skill_value('Magery') >= 40:
         Spells.CastMagery("Mind Blast")
+        followup_cast_ms = 2000
     elif followup == 'lightning':
         Spells.CastMagery("Lightning")
+        followup_cast_ms = 1750
     else:
         Spells.CastMagery("Energy Bolt")
-    wait_for_target_responsive(4000, True)
-    target_current_visible_hostile(nearest)
-    if did_fizzle(followup_cast):
-        Timer.Create('spells', 250)
+        followup_cast_ms = 2250
+    target_ready = wait_for_spell_target(
+        followup_cast, followup_cast_ms, 'hostile', nearest)
+    if not target_ready or did_fizzle(followup_cast):
+        set_spell_timer(250)
     else:
-        Timer.Create('spells', calc_castpause())
+        set_spell_timer(calc_castpause())
         Timer.Create('combo_cd', max(500, int(sv.get('combo_cooldown_ms', 1500))))
     return True
 
 
+def cast_word_of_death(nearest):
+    """Try an enabled finisher before other offensive spells."""
+    if sv.get('use_wordofdeath', 0) != 1:
+        return False
+    if Timer.Check('spells') == True or Player.Paralized or Player.Poisoned:
+        return False
+    if Player.DistanceTo(nearest) > 10:
+        return False
+    # Mob health bars may use 25, 100, or actual HP as their maximum.
+    if nearest.HitsMax <= 0 or not 0 < nearest.Hits < nearest.HitsMax * 0.3:
+        return False
+    _, real_max = get_mob_real_hp(nearest)
+    if real_max is not None and real_max <= 500:
+        return False
+    if Player.Mana < mana_cost(50) or skill_value('Spellweaving') < 83:
+        return False
+    if sv['use_messages'] == 1:
+        Player.HeadMessage(32, "Word of Death!")
+    pre_cast = time.time()
+    Spells.CastSpellweaving("Word of Death")
+    target_ready = wait_for_spell_target(
+        pre_cast, 3500, 'hostile', nearest, True)
+    if target_ready and not did_fizzle(pre_cast):
+        set_spell_timer(calc_castpause())
+    return True
+
+
+def cast_lighthouse(item):
+    """Use enabled direct-damage spells that accept damageable item targets."""
+    if (Timer.Check('spells') or Target.HasTarget() or external_target_reserved() or
+            Player.Paralized or Player.Poisoned or not valid_lighthouse(item)):
+        return False
+    conserve = low_mana()
+    # Mind Blast, finishers, debuffs and pet commands require mobile targets.
+    spells = (
+        ('flamestrike', 'Magery', 'Flame Strike', 40, 60, 2500),
+        ('energybolt', 'Magery', 'Energy Bolt', 20, 50, 2250),
+        ('eaglestrike', 'Mysticism', 'Eagle Strike', 9, 9, 1500),
+        ('bombard', 'Mysticism', 'Bombard', 20, 51, 2250),
+        ('lightning', 'Magery', 'Lightning', 11, 40, 1750),
+        ('fireball', 'Magery', 'Fireball', 9, 30, 1500),
+        ('harm', 'Magery', 'Harm', 6, 15, 1250),
+        ('nether_bolt', 'Mysticism', 'Nether Bolt', 4, 0, 1000),
+        ('magicarrow', 'Magery', 'Magic Arrow', 4, 0, 1000),
+    )
+    for key, school, spell, mana, skill, cast_ms in spells:
+        if sv.get('use_' + key) != 1 or (conserve and mana > 14):
+            continue
+        if Player.Mana < mana_cost(mana) or skill_value(school) < skill:
+            continue
+        if key == 'harm' and Player.DistanceTo(item.Serial) > 2:
+            continue
+        if sv['use_messages'] == 1:
+            Player.HeadMessage(45, spell + " [Lighthouse]")
+        pre_cast = time.time()
+        if school == 'Magery':
+            Spells.CastMagery(spell)
+        else:
+            Spells.CastMysticism(spell)
+        target_ready = wait_for_spell_target(pre_cast, cast_ms, 'lighthouse', item)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
+    return False
+
+
 def cast_single_target(nearest):
-    """Cascade: strongest available single-target spell."""
+    """Try one single-target attack; return whether a cast was attempted."""
     if Timer.Check('spells') == True or Player.Paralized:
-        return
+        return False
     if Player.Poisoned:
-        auto_cure()
-        return
+        return auto_cure()
+    if cast_word_of_death(nearest):
+        return True
 
     # Explosion combo (v0.5) — takes priority when enabled
     if sv.get('use_explosion_combo', 0) == 1:
         if cast_explosion_combo(nearest):
-            return
+            return True
 
     # Death Ray — Magery mastery (2250ms, req. 90 real Magery)
     if sv['use_death_ray'] == 1 and not Player.BuffsExist('Death Ray') and Player.Mana >= mana_cost(30):
@@ -3002,29 +3398,11 @@ def cast_single_target(nearest):
                 Player.HeadMessage(32, "Death Ray!")
             pre_cast = time.time()
             Spells.CastMastery("Death Ray")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-            return
-
-    # Word of Death: instant kill on very low HP mobs — only worth it on tough mobs (SW req. 83)
-    # nearest.Hits is the bar value (low bar = near death). Real max from MOBSLIST when known.
-    if sv['use_wordofdeath'] == 1:
-        _, _wod_max = get_mob_real_hp(nearest)
-        if _wod_max is None:
-            _wod_max = 501
-        if 0 < nearest.Hits < 8 and _wod_max > 500:
-            if Player.Mana >= mana_cost(50) and skill_value('Spellweaving') >= 83:
-                if sv['use_messages'] == 1:
-                    Player.HeadMessage(32, "Word of Death!")
-                pre_cast = time.time()
-                Spells.CastSpellweaving("Word of Death")
-                wait_for_target_responsive(4000, True)
-                target_current_visible_hostile(nearest)
-                if not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
-                return
+            target_ready = wait_for_spell_target(
+                pre_cast, 2250, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
 
     # Resist-aware bias + nuke cascade — fire strongest enabled spell matching
     # mob.weakres (or strongest enabled if cascade is active post-debuff).
@@ -3067,12 +3445,16 @@ def cast_single_target(nearest):
             if _school == 'Magery':       Spells.CastMagery(_name)
             elif _school == 'Mysticism':  Spells.CastMysticism(_name)
             elif _school == 'Necromancy': Spells.CastNecro(_name)
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            _cast_times = {'Flame Strike': 2500, 'Energy Bolt': 2250,
+                           'Mind Blast': 2000, 'Lightning': 1750,
+                           'Fireball': 1500, 'Eagle Strike': 1500,
+                           'Nether Bolt': 1000, 'Bombard': 2250}
+            target_ready = wait_for_spell_target(
+                pre_cast, _cast_times[_name], 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             nuke_cascade_until = 0.0  # consume cascade
-            return
+            return True
 
     # Mana-aware: skip expensive top-tier nukes on trash mobs (let cascade fall through
     # to cheaper Energy Bolt / Mind Blast / Lightning). Only kicks in when mana is short.
@@ -3091,11 +3473,11 @@ def cast_single_target(nearest):
                 Player.HeadMessage(45, "Flame Strike!")
             pre_cast = time.time()
             Spells.CastMagery("Flame Strike")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-            return
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
 
     # Energy Bolt — Magery C6 (2250ms) — skipped in low-mana mode (>14 base mana)
     if not _low and sv['use_energybolt'] == 1 and Player.Mana >= mana_cost(20):
@@ -3104,11 +3486,11 @@ def cast_single_target(nearest):
                 Player.HeadMessage(45, "Energy Bolt!")
             pre_cast = time.time()
             Spells.CastMagery("Energy Bolt")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-            return
+            target_ready = wait_for_spell_target(
+                pre_cast, 2250, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
 
     # Eagle Strike — Mysticism C3 (1500ms)
     if sv['use_eaglestrike'] == 1 and Player.Mana >= mana_cost(9):
@@ -3117,11 +3499,11 @@ def cast_single_target(nearest):
                 Player.HeadMessage(45, "Eagle Strike!")
             pre_cast = time.time()
             Spells.CastMysticism("Eagle Strike")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-            return
+            target_ready = wait_for_spell_target(
+                pre_cast, 1500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
 
     # Bombard — Mysticism C6 (2250ms, physical damage, paralyzes target briefly)
     if not _low and sv['use_bombard'] == 1 and Player.Mana >= mana_cost(20):
@@ -3130,11 +3512,11 @@ def cast_single_target(nearest):
                 Player.HeadMessage(45, "Bombard!")
             pre_cast = time.time()
             Spells.CastMysticism("Bombard")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-            return
+            target_ready = wait_for_spell_target(
+                pre_cast, 2250, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
 
     # Mind Blast — Magery C5 (2000ms)
     if sv['use_mindblast'] == 1 and Player.Mana >= mana_cost(14):
@@ -3143,11 +3525,11 @@ def cast_single_target(nearest):
                 Player.HeadMessage(45, "Mind Blast!")
             pre_cast = time.time()
             Spells.CastMagery("Mind Blast")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
-            return
+            target_ready = wait_for_spell_target(
+                pre_cast, 2000, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
 
     # Lightning — Magery C4 (1750ms)
     if sv['use_lightning'] == 1 and Player.Mana >= mana_cost(11):
@@ -3155,11 +3537,11 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Lightning!")
         pre_cast = time.time()
         Spells.CastMagery("Lightning")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
-        return
+        target_ready = wait_for_spell_target(
+            pre_cast, 1750, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
 
     # Fireball — Magery C3 (1500ms)
     if sv['use_fireball'] == 1 and Player.Mana >= mana_cost(9):
@@ -3167,11 +3549,11 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Fireball!")
         pre_cast = time.time()
         Spells.CastMagery("Fireball")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
-        return
+        target_ready = wait_for_spell_target(
+            pre_cast, 1500, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
 
     # Harm — Magery C2 (1500ms), close range only (2 tiles)
     if sv['use_harm'] == 1 and Player.Mana >= mana_cost(6) and Player.DistanceTo(nearest) <= 2:
@@ -3179,11 +3561,11 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Harm!")
         pre_cast = time.time()
         Spells.CastMagery("Harm")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
-        return
+        target_ready = wait_for_spell_target(
+            pre_cast, 1250, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
 
     # Nether Bolt — Mysticism C1 (1000ms)
     if sv['use_nether_bolt'] == 1 and Player.Mana >= mana_cost(4):
@@ -3191,11 +3573,11 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Nether Bolt!")
         pre_cast = time.time()
         Spells.CastMysticism("Nether Bolt")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
-        return
+        target_ready = wait_for_spell_target(
+            pre_cast, 1000, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
 
     # Magic Arrow — Magery C1 (1250ms), last resort
     if sv['use_magicarrow'] == 1 and Player.Mana >= mana_cost(4):
@@ -3203,11 +3585,11 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Magic Arrow!")
         pre_cast = time.time()
         Spells.CastMagery("Magic Arrow")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
-        return
+        target_ready = wait_for_spell_target(
+            pre_cast, 1000, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
 
     # Harm — Magery C2 (1250ms, only effective at very close range)
     if sv['use_harm'] == 1 and Player.Mana >= mana_cost(6) and Player.DistanceTo(nearest) <= 2:
@@ -3215,11 +3597,11 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Harm!")
         pre_cast = time.time()
         Spells.CastMagery("Harm")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
-        return
+        target_ready = wait_for_spell_target(
+            pre_cast, 1250, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
 
     # Magic Arrow — last resort (Magery C1 = 1000ms)
     if sv['use_magicarrow'] == 1 and Player.Mana >= mana_cost(4):
@@ -3227,10 +3609,12 @@ def cast_single_target(nearest):
             Player.HeadMessage(45, "Magic Arrow!")
         pre_cast = time.time()
         Spells.CastMagery("Magic Arrow")
-        wait_for_target_responsive(4000, True)
-        target_current_visible_hostile(nearest)
-        if not did_fizzle(pre_cast):
-            Timer.Create('spells', calc_castpause())
+        target_ready = wait_for_spell_target(
+            pre_cast, 1000, 'hostile', nearest)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(calc_castpause())
+        return True
+    return False
 
 def cast_multi_target(nearest):
     """Multi-target spells for 2+ mobs nearby. Falls back to single target."""
@@ -3248,7 +3632,7 @@ def cast_multi_target(nearest):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(32, "Ethereal Blast!")
                 Spells.CastMastery("Ethereal Blast")
-                Timer.Create('spells', calc_castspeed(2250) + calc_castpause())
+                set_spell_timer(calc_castspeed(2250) + calc_castpause())
                 create_rollback_cooldown('ethereal_blast', 300000)
                 return
 
@@ -3259,10 +3643,10 @@ def cast_multi_target(nearest):
                 Player.HeadMessage(45, "Chain Lightning!")
             pre_cast = time.time()
             Spells.CastMagery("Chain Lightning")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Meteor Swarm — Magery C7 (2500ms)
@@ -3272,10 +3656,10 @@ def cast_multi_target(nearest):
                 Player.HeadMessage(45, "Meteor Swarm!")
             pre_cast = time.time()
             Spells.CastMagery("Meteor Swarm")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Wither — Necro, self-centered AoE cold damage (req. 60, 1500ms)
@@ -3285,7 +3669,7 @@ def cast_multi_target(nearest):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(45, "Wither!")
             Spells.CastNecro("Wither")
-            Timer.Create('spells', calc_castspeed(1500) + calc_castpause())
+            set_spell_timer(calc_castspeed(1500) + calc_castpause())
             return
 
     # Poison Strike — Necro, targeted AoE poison damage (req. 65, 1750ms)
@@ -3296,10 +3680,10 @@ def cast_multi_target(nearest):
                 Player.HeadMessage(45, "Poison Strike!")
             pre_cast = time.time()
             Spells.CastNecro("Poison Strike")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 1750, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Hail Storm — Mysticism C7 (2500ms, req. ~66)
@@ -3308,7 +3692,7 @@ def cast_multi_target(nearest):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(45, "Hail Storm!")
             Spells.CastMysticism("Hail Storm")
-            Timer.Create('spells', calc_castspeed(2500) + calc_castpause())
+            set_spell_timer(calc_castspeed(2500) + calc_castpause())
             return
 
     # Nether Cyclone — Mysticism C8 (2750ms, req. ~80)
@@ -3318,10 +3702,10 @@ def cast_multi_target(nearest):
                 Player.HeadMessage(45, "Nether Cyclone!")
             pre_cast = time.time()
             Spells.CastMysticism("Nether Cyclone")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2750, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Essence of Wind — SW (req. 52, 3000ms)
@@ -3331,10 +3715,10 @@ def cast_multi_target(nearest):
                 Player.HeadMessage(45, "Essence of Wind!")
             pre_cast = time.time()
             Spells.CastSpellweaving("Essence of Wind")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 3000, 'hostile', nearest, True)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Nothing available — fall back to single target
@@ -3354,7 +3738,7 @@ def cast_mass_target(nearest):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(32, "Earthquake!")
             Spells.CastMagery("Earthquake")
-            Timer.Create('spells', calc_castspeed(2750) + calc_castpause())
+            set_spell_timer(calc_castspeed(2750) + calc_castpause())
             return
 
     # Thunderstorm — SW, self-centered, no targeting needed (req. 10)
@@ -3363,7 +3747,7 @@ def cast_mass_target(nearest):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(32, "Thunderstorm!")
             Spells.CastSpellweaving("Thunderstorm")
-            Timer.Create('spells', calc_castspeed_sw(1500) + calc_castpause())
+            set_spell_timer(calc_castspeed_sw(1500) + calc_castpause())
             return
 
     # Wildfire — SW (req. 66, 2500ms), targeted location
@@ -3373,10 +3757,10 @@ def cast_mass_target(nearest):
                 Player.HeadMessage(32, "Wildfire!")
             pre_cast = time.time()
             Spells.CastSpellweaving("Wildfire")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest, True)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Spell Plague — Mysticism C7 (req. ~66, 2500ms)
@@ -3386,10 +3770,10 @@ def cast_mass_target(nearest):
                 Player.HeadMessage(32, "Spell Plague!")
             pre_cast = time.time()
             Spells.CastMysticism("Spell Plague")
-            wait_for_target_responsive(4000, True)
-            target_current_visible_hostile(nearest)
-            if not did_fizzle(pre_cast):
-                Timer.Create('spells', calc_castpause())
+            target_ready = wait_for_spell_target(
+                pre_cast, 2500, 'hostile', nearest)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
             return
 
     # Nothing available — fall back
@@ -3408,13 +3792,14 @@ def manage_reaper(nearest):
                     Player.HeadMessage(80, "Summon Reaper!")
                 pre_cast = time.time()
                 Spells.CastMastery("Summon Reaper")
-                target_ready = wait_for_target_responsive(4000, True)
-                if target_ready:
-                    Target.TargetExecuteRelative(nearest, -2)
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2250, 'relative', (nearest.Serial, -2))
                 if target_ready and not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                    set_spell_timer(calc_castpause())
+                    Timer.Create('guardme_delay', 2000)
                     guardme_pending = True
-                return
+                return True
+    return False
 
 def say_guardme_if_pending():
     """Say 'all guard me' once after any summon cast completes.
@@ -3460,6 +3845,28 @@ def status_overlay(nearest=None):
                 parts.append(dbg)
     Player.HeadMessage(88, " | ".join(parts))
 
+def summon_demand():
+    """Return True only when an enabled, castable summon is missing."""
+    followers = Player.Followers
+    free_slots = Player.FollowersMax - followers
+    return (
+        (sv['use_risingcolossus'] == 1 and
+         skill_value('Mysticism') >= 80 and free_slots >= _COLOSSUS_SLOTS) or
+        (sv['use_summonelemental'] == 1 and
+         skill_value('Magery') >= 70 and followers < sv['elemental_threshold']) or
+        (sv['use_summon_daemon'] == 1 and
+         skill_value('Magery') >= 70 and followers < sv['daemon_threshold']) or
+        (sv['use_energy_vortex'] == 1 and
+         skill_value('Magery') >= 60 and followers < sv['energy_vortex_threshold']) or
+        (sv['use_blade_spirit'] == 1 and
+         skill_value('Magery') >= 50 and followers < sv['blade_spirit_threshold']) or
+        (sv['use_summon_creature'] == 1 and
+         followers < sv['creature_threshold']) or
+        (sv['use_summonfey'] == 1 and
+         skill_value('Spellweaving') >= 0 and followers < sv['fey_threshold']) or
+        (sv['use_summonfiend'] == 1 and
+         skill_value('Spellweaving') >= 0 and followers < sv['fey_threshold']))
+
 def manage_summons(hostiles_nearby=False):
     """Maintain summons, preferring Arcane Empowerment while it is safe.
 
@@ -3470,9 +3877,18 @@ def manage_summons(hostiles_nearby=False):
     if Timer.Check('spells') == True or Player.Paralized:
         return False
 
-    if not hostiles_nearby and not has_arcane_empowerment():
-        arcane_empowerment()
+    if not summon_demand():
         return False
+
+    if not hostiles_nearby and not has_arcane_empowerment():
+        if arcane_empowerment():
+            return True
+        if Timer.Check('summon_empowerment_notice') == False:
+            if sv.get('use_messages', 1) == 1:
+                Player.HeadMessage(33, "Summon waiting for Arcane Empowerment")
+            Timer.Create('summon_empowerment_notice', 5000)
+        # Safe-area summons never proceed unempowered.
+        return True
 
     # Rising Colossus — Mysticism C8 (2750ms, req. ~80); cycles tiles if placement is blocked
     if sv['use_risingcolossus'] == 1 and skill_value('Mysticism') >= 80:
@@ -3492,26 +3908,37 @@ def manage_summons(hostiles_nearby=False):
                 pz = Player.Position.Z
                 pre_cast = time.time()
                 Spells.CastMysticism("Rising Colossus")
-                target_ready = wait_for_target_responsive(4000, True)
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2750, 'colossus', (px + dx, py + dy, pz))
                 if target_ready:
-                    Target.TargetExecute(px + dx, py + dy, pz)
                     Misc.Pause(max(500, serverdelay))
-                rc_blocked = any("location is blocked" in e.Text.lower()
-                                 for e in Journal.GetJournalEntry(pre_cast))
+                rc_entries = journal_entries_since(pre_cast)
+                if rc_entries is None:
+                    if Timer.Check('journal_race_notice') == False:
+                        if sv.get('use_messages', 1) == 1:
+                            Player.HeadMessage(33, "Journal changed; confirming Colossus")
+                        Timer.Create('journal_race_notice', 5000)
+                    set_spell_timer(750)
+                    Timer.Create('colossus_confirmation', 2000)
+                    return True
+                rc_blocked = any("location is blocked" in (e.Text or "").lower()
+                                 for e in rc_entries)
                 if not target_ready:
-                    Timer.Create('spells', 250)
+                    set_spell_timer(250)
                 elif rc_blocked:
                     _colossus_tile_idx += 1
-                    Timer.Create('spells', 700)  # short pause, retry next tile next cycle
+                    set_spell_timer(700)  # short pause, retry next tile next cycle
                 elif did_fizzle(pre_cast):
-                    Timer.Create('spells', 250)
+                    set_spell_timer(250)
                 else:
                     _colossus_tile_idx = 0  # reset on success so next summon starts fresh
-                    Timer.Create('spells', max(750, calc_castpause()))
+                    set_spell_timer(max(750, calc_castpause()))
                     Timer.Create('colossus_confirmation', 2000)
+                    Timer.Create('guardme_delay', 2000)
                     guardme_pending = True
-            # Colossus is required: reserve combat until it appears or slots fill.
-            return True
+                # Only an actual cast attempt reserves this loop. Low mana
+                # must leave room for affordable attacks or other summons.
+                return True
 
     # Summon Elemental — Magery C8 (2750ms)
     if sv['use_summonelemental'] == 1 and skill_value('Magery') >= 70:
@@ -3523,7 +3950,9 @@ def manage_summons(hostiles_nearby=False):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(80, spell)
                 Spells.CastMagery(spell)
-                Timer.Create('spells', calc_castspeed(2750) + calc_castpause())
+                elemental_cast_ms = calc_castspeed(2750) + calc_castpause()
+                set_spell_timer(elemental_cast_ms)
+                Timer.Create('guardme_delay', elemental_cast_ms + 2000)
                 guardme_pending = True
                 return True
 
@@ -3535,11 +3964,11 @@ def manage_summons(hostiles_nearby=False):
                     Player.HeadMessage(80, "Summon Daemon!")
                 pre_cast = time.time()
                 Spells.CastMagery("Summon Daemon")
-                target_ready = wait_for_target_responsive(4000, True)
-                if target_ready:
-                    Target.TargetExecuteRelative(Player.Serial, 1)
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2750, 'relative', (Player.Serial, 1))
                 if target_ready and not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                    set_spell_timer(calc_castpause())
+                    Timer.Create('guardme_delay', 2000)
                     guardme_pending = True
                 return True
 
@@ -3551,11 +3980,11 @@ def manage_summons(hostiles_nearby=False):
                     Player.HeadMessage(80, "Energy Vortex!")
                 pre_cast = time.time()
                 Spells.CastMagery("Energy Vortex")
-                target_ready = wait_for_target_responsive(4000, True)
-                if target_ready:
-                    Target.TargetExecuteRelative(Player.Serial, 1)
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2500, 'relative', (Player.Serial, 1))
                 if target_ready and not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                    set_spell_timer(calc_castpause())
+                    Timer.Create('guardme_delay', 2000)
                     guardme_pending = True
                 return True
 
@@ -3567,11 +3996,11 @@ def manage_summons(hostiles_nearby=False):
                     Player.HeadMessage(80, "Blade Spirits!")
                 pre_cast = time.time()
                 Spells.CastMagery("Blade Spirits")
-                target_ready = wait_for_target_responsive(4000, True)
-                if target_ready:
-                    Target.TargetExecuteRelative(Player.Serial, 1)
+                target_ready = wait_for_spell_target(
+                    pre_cast, 2250, 'relative', (Player.Serial, 1))
                 if target_ready and not did_fizzle(pre_cast):
-                    Timer.Create('spells', calc_castpause())
+                    set_spell_timer(calc_castpause())
+                    Timer.Create('guardme_delay', 2000)
                     guardme_pending = True
                 return True
 
@@ -3583,7 +4012,7 @@ def manage_summons(hostiles_nearby=False):
                     Player.HeadMessage(80, "Summon Creature!")
                 Spells.CastMagery("Summon Creature")
                 summon_creature_cast_ms = calc_castspeed(2000) + calc_castpause()
-                Timer.Create('spells', summon_creature_cast_ms)
+                set_spell_timer(summon_creature_cast_ms)
                 # Let the summon finish materializing before issuing its order.
                 Timer.Create('guardme_delay', summon_creature_cast_ms + 2000)
                 guardme_pending = True
@@ -3597,7 +4026,7 @@ def manage_summons(hostiles_nearby=False):
                     Player.HeadMessage(80, "Summon Fey")
                 Spells.CastSpellweaving("Summon Fey")
                 guardme_fey = 1
-                Timer.Create('spells', calc_castspeed_sw(1500) + calc_castpause())
+                set_spell_timer(calc_castspeed_sw(1500) + calc_castpause())
                 return True
         elif guardme_fey == 1:
             Player.ChatSay("all guard me")
@@ -3611,7 +4040,7 @@ def manage_summons(hostiles_nearby=False):
                     Player.HeadMessage(80, "Summon Fiend")
                 Spells.CastSpellweaving("Summon Fiend")
                 guardme_fiend = 1
-                Timer.Create('spells', calc_castspeed_sw(2000) + calc_castpause())
+                set_spell_timer(calc_castspeed_sw(2000) + calc_castpause())
                 return True
         elif guardme_fiend == 1:
             Player.ChatSay("all guard me")
@@ -3634,8 +4063,7 @@ if os.path.exists(_profile_path):
         for _k, _v in _saved.items():
             Misc.SetSharedValue(_k, _v)
         if _migrate_legacy_profile:
-            with open(PROFILE_PATH, 'w') as _f:
-                json.dump(_saved, _f, indent=2, sort_keys=True)
+            atomic_write_json(PROFILE_PATH, _saved)
         refresh_sv()
         if _migrate_legacy_profile:
             Player.HeadMessage(68, "Legacy settings migrated: %s" % PROFILE_FILENAME)
@@ -3743,7 +4171,7 @@ if skill_value('Healing') > 30 or skill_value('Veterinary') > 30:
 
 refresh_gear_cache()
 
-Player.HeadMessage(90, "Start Ultimate Mage Attack Script by Mike|Walker")
+Player.HeadMessage(90, "Start Ultimate Mage Attack Script v0.51 by Mike|Walker")
 Player.HeadMessage(40, "Dont forget to start the GUMP script")
 
 ##################################################################
@@ -3756,6 +4184,10 @@ while not Player.IsGhost:
     if str(Misc.ReadSharedValue("mw_attack_instance_token")) != _attack_instance_token:
         Player.HeadMessage(33, "Older attack-script copy stopped")
         break
+
+    if not begin_mage_actions():
+        Misc.Pause(100)
+        continue
 
     # GUMP changes increment one revision value. Poll that cheaply and retain a
     # 5-second full refresh fallback for settings changed by another script.
@@ -3783,7 +4215,7 @@ while not Player.IsGhost:
     # Renewal to its pet when possible; otherwise clear the orphan before any
     # heal, summon, buff, or attack can start another spell.
     if resolve_orphan_target_cursor():
-        Misc.Pause(100)
+        pause_mage_loop(100)
         continue
 
     # --- Always-on: paralyze escape & blood oath ---
@@ -3819,13 +4251,17 @@ while not Player.IsGhost:
         Timer.Create("maintenance", 4000)
 
     if Timer.Check("legendarycheck") == False:
-        legendarycheck()
+        rare_pet_alert_active = legendarycheck()
         Timer.Create("legendarycheck", 1000)
+
+    if rare_pet_alert_active:
+        pause_mage_loop(100)
+        continue
 
     # A self-care attempt owns this loop. Never follow a failed/disturbed heal
     # or cure with an offensive cast while the server resolves cast state.
     if care_attempted:
-        Misc.Pause(100)
+        pause_mage_loop(100)
         continue
 
     # Say "all guard me" right after a successful summon, before any spell-timer gate.
@@ -3835,13 +4271,21 @@ while not Player.IsGhost:
     # above remain active while casting. Combat scans cannot do useful work until
     # the current spell recovery finishes.
     if Timer.Check('spells') == True:
-        Misc.Pause(100)
+        pause_mage_loop(100)
+        continue
+
+    # Manual GUMP book swaps must work while idle and with auto-swap disabled.
+    process_slayer_swap(None)
+    if Timer.Check('spells') == True:
+        pause_mage_loop(100)
         continue
 
     all_victims = mobs_list(sv['attackrange'])
     visible_changelings = []
     if sv['attack_blue_changelings'] == 1:
         visible_changelings = changelings_list()
+    lighthouse = find_lighthouse() if not (all_victims or visible_changelings) else None
+    publish_mage_combat(all_victims or visible_changelings or lighthouse)
     nether_blast_pending = Timer.Check('netherblast_pending')
 
     # --- Summons: require Arcane Empowerment while safe; bypass it in danger ---
@@ -3854,7 +4298,7 @@ while not Player.IsGhost:
     # Summoning owns the loop. Never follow it with Eagle Strike or another
     # offensive cast while the server is still creating the follower.
     if summon_attempted:
-        Misc.Pause(100)
+        pause_mage_loop(100)
         continue
 
     if (len(all_victims) > 0 or len(visible_changelings) > 0) and sv['activeattack'] == 1:
@@ -3878,42 +4322,24 @@ while not Player.IsGhost:
             prebuff_nearest = min(prebuff_dist, key=lambda mob_dist: mob_dist[1])[0]
             nether_blast_due = nether_blast_ready_for(prebuff_nearest, prebuff_nearby_count)
 
-        # Buffs — throttled to 750ms (each BuffsExist is an IPC call); urgent
-        # re-buff when under attack bypasses the throttle.
+        # Routine buffs wait until combat ends. Low HP still permits the
+        # configured defensive buffs; healing and curing run above this branch.
         if (not nether_blast_pending and not nether_blast_due and
-                (Timer.Check('buffcheck') == False or is_under_attack())):
+                is_under_attack()):
             Timer.Create('buffcheck', 750)
             keep_magic_reflect()
             keep_reactive_armor()
             keep_protection()
-            keep_bless()
             attune_weapon()
-            gift_of_life()
-            gift_of_renewal()
             keep_mana_shield()
-            keep_mystic_weapon()
-            arcane_empowerment()
-            keep_reaper_form()
-            keep_wraith_form()
-            keep_lich_form()
-            keep_vampiric_embrace()
-            keep_stone_form()
-            bard_resilience()
-            bard_perseverance()
-            bard_inspire()
-            bard_invigorate()
-            pet_gift_of_life()
-            pet_gift_of_renewal()
-            bless_pets()
 
         # A buff cast owns this loop. Next tick performs a fresh mobile scan;
         # scanning repeatedly during its recovery cannot change an action.
         if Timer.Check('spells') == True or Target.HasTarget():
-            Misc.Pause(100)
+            pause_mage_loop(100)
             continue
 
-        # Use the initial fresh LOS scan for pre-combat helpers. A second fresh
-        # scan remains immediately before the actual combat spell below.
+        # Reuse the fresh LOS scan until a helper performs a blocking action.
         victims = prebuff_victims
         if len(victims) == 0:
             last_attack_target = 0
@@ -3922,7 +4348,7 @@ while not Player.IsGhost:
                 nb_clear_tiles()
             process_slayer_swap(None)
             status_overlay(None)
-            Misc.Pause(100)
+            pause_mage_loop(100)
             continue
 
         # Distance data — visible mobs only, single pass.
@@ -3934,11 +4360,11 @@ while not Player.IsGhost:
         nearest = min(victims_dist, key=lambda mob_dist: mob_dist[1])[0]
 
         if nearest is None:
-            Misc.Pause(100)
+            pause_mage_loop(100)
             continue
         live_nearest = Mobiles.FindBySerial(nearest.Serial)
         if live_nearest is None:
-            Misc.Pause(100)
+            pause_mage_loop(100)
             continue
         nearest = live_nearest
         nether_blast_ready = nether_blast_ready_for(nearest, nearby_count)
@@ -3964,7 +4390,9 @@ while not Player.IsGhost:
 
         if (not nether_blast_pending and not nether_blast_ready and
                 Timer.Check('spells') == False):
-            manage_reaper(nearest)
+            if manage_reaper(nearest):
+                pause_mage_loop(100)
+                continue
 
         # Honor
         if (not nether_blast_pending and not nether_blast_ready and
@@ -3982,42 +4410,20 @@ while not Player.IsGhost:
                     use_honor_fix = 0
                 else:
                     use_honor_fix = 1
+                # Honor waits for a cursor: take a fresh scan next tick.
+                pause_mage_loop(100)
+                continue
 
         # Slayer book: manual requests + auto-swap to match target
         if not nether_blast_pending and not nether_blast_ready:
             process_slayer_swap(nearest)
 
         if Timer.Check('spells') == True or Target.HasTarget():
-            Misc.Pause(100)
+            pause_mage_loop(100)
             continue
 
-        # Honor targeting or a Slayer equip can block while mobs spawn, die, or
-        # move. Rebuild again immediately before combat and use the new nearest.
-        all_victims = mobs_list(sv['attackrange'])
-        visible_changelings = []
-        if sv['attack_blue_changelings'] == 1:
-            visible_changelings = changelings_list()
-        if manage_summons(len(all_victims) > 0 or len(visible_changelings) > 0):
-            Misc.Pause(100)
-            continue
-        victims = mobs_in_line_of_sight(all_victims, sv['attackrange'])
-        victim_serials = set(mob.Serial for mob in victims)
-        for changeling in visible_changelings:
-            if changeling.Serial not in victim_serials:
-                victims.append(changeling)
-                victim_serials.add(changeling.Serial)
-        if len(victims) == 0:
-            last_attack_target = 0
-            last_distance_marker = None
-            Misc.Pause(100)
-            continue
-        victims_dist = [(mob, Player.DistanceTo(mob)) for mob in victims]
-        nearby_count = len([m for m, distance in victims_dist if distance <= 8])
-        current_nearest = min(victims_dist, key=lambda mob_dist: mob_dist[1])[0]
-        # Do not restart merely because another mob became nearest between
-        # scans. Crowded spawns can reorder continuously and starve all casts.
-        nearest = current_nearest
-        nether_blast_ready = nether_blast_ready_for(nearest, nearby_count)
+        # Reaper/Honor attempts restart the loop; book equips own the spell
+        # lock above. Reuse this scan until the spell cursor revalidates LOS.
 
         # Harmful spells establish combat themselves. Player.Attack shares the
         # server action lock and was blocking the spell cast that followed it.
@@ -4025,6 +4431,18 @@ while not Player.IsGhost:
 
         # Status overlay (throttled)
         status_overlay(nearest)
+
+        # Finishers and the follow-up to a successful Nether Blast must not
+        # lose every turn to another mastery cast or optional debuffs.
+        if cast_word_of_death(nearest):
+            nether_followup_pending = False
+            pause_mage_loop(100)
+            continue
+        if (nether_followup_pending and not Player.Poisoned and
+                cast_single_target(nearest)):
+            nether_followup_pending = False
+            pause_mage_loop(100)
+            continue
 
         # Debuffs → then attack spell
         nether_blast_pending = Timer.Check('netherblast_pending')
@@ -4064,53 +4482,43 @@ while not Player.IsGhost:
                         nb_target_y = nearest.Position.Y
                         nb_target_z = nearest.Position.Z
                         pre_cast = time.time()
-                        Timer.Create('netherblast_pending', 5100)
+                        set_nether_pending_timer(5100)
                         if Target.HasTarget():
                             # Finish an orphaned spell cursor instead of
                             # cancelling it, then retry Nether Blast.
                             place_nether_blast_target(nb_target_serial, nb_target_x,
                                                       nb_target_y, nb_target_z)
-                            Timer.Create('spells', 250)
-                            Timer.Create('netherblast_pending', 3000)
+                            set_spell_timer(250)
+                            set_nether_pending_timer(3000)
                             target_ready = False
                         else:
                             # Cooldown is cast-start to cast-start. Starting it
                             # after placement added the full cast time again.
-                            Timer.Create('netherblast', 5100)
+                            create_rollback_cooldown('netherblast', 5100)
                             Spells.CastMastery("Nether Blast")
-                            # Long enough for lag, but journal failures still
-                            # abort immediately instead of blocking blindly.
-                            target_ready = wait_for_target_responsive(6000, True)
+                            target_ready = wait_for_spell_target(
+                                pre_cast, 2000, 'nether',
+                                (nb_target_serial, nb_target_x,
+                                 nb_target_y, nb_target_z),
+                                max_pending_ms=5100)
                         if target_ready:
-                            place_nether_blast_target(nb_target_serial, nb_target_x,
-                                                      nb_target_y, nb_target_z)
+                            # Recovery runs while waiting for a late rejection.
+                            set_spell_timer(calc_castpause())
                             Misc.Pause(max(250, serverdelay))
-                            nb_failure = cast_failure_since(pre_cast)
-                            if nb_failure:
-                                if nb_failure == "interrupted":
-                                    Timer.Create('spells', 1)
-                                    Timer.Create('netherblast_pending', 1)
-                                    Timer.Create('netherblast', 1)
-                                else:
-                                    if Timer.Check('spells') == False:
-                                        Timer.Create('spells', 250)
-                                    Timer.Create('netherblast_pending', 1000)
-                                    Timer.Create('netherblast', 1000)
-                            else:
-                                Timer.Create('netherblast_pending', 1)
-                                Timer.Create('spells', calc_castpause())
+                        nb_failure = cast_failure_since(pre_cast)
+                        if target_ready and nb_failure in (None, 'action_wait'):
+                            set_nether_pending_timer(1)
+                            nether_followup_pending = True
                         else:
-                            # Cursor timeout/failure: synchronize briefly and
-                            # never fire a second spell in this same loop.
-                            nb_failure = cast_failure_since(pre_cast)
-                            if nb_failure == "interrupted":
-                                Timer.Create('spells', 1)
-                                Timer.Create('netherblast_pending', 1)
-                                Timer.Create('netherblast', 1)
-                            else:
-                                if Timer.Check('spells') == False:
-                                    Timer.Create('spells', 250)
-                                Timer.Create('netherblast_pending', 1000)
+                            # Confirmed rejection releases ownership immediately;
+                            # an ambiguous timeout must still accept a late cursor.
+                            confirmed_failure = release_failed_nether_blast(nb_failure)
+                            if nb_failure == 'interrupted':
+                                set_spell_timer(1)
+                            elif Timer.Check('spells') == False:
+                                set_spell_timer(250)
+                            if not confirmed_failure:
+                                set_nether_pending_timer(1)
                                 Timer.Create('netherblast', 1000)
                 if not nether_blast_attempted and Timer.Check('netherblast_pending') == False:
                     if nearby_count >= sv['mass_threshold']:
@@ -4120,9 +4528,18 @@ while not Player.IsGhost:
                     else:
                         cast_single_target(nearest)
 
+    elif lighthouse is not None and sv['activeattack'] == 1:
+        last_attack_target = lighthouse.Serial
+        last_distance_marker = None
+        nether_followup_pending = False
+        if _nb_marker_count > 0:
+            nb_clear_tiles()
+        status_overlay(None)
+        cast_lighthouse(lighthouse)
     else:
         last_attack_target = 0
         last_distance_marker = None
+        nether_followup_pending = False
 
         # No mobs — clear any leftover NB ground markers
         if _nb_marker_count > 0:
@@ -4162,6 +4579,6 @@ while not Player.IsGhost:
         if sv['use_honor'] == 1 and Player.BuffsExist('Honored'):
             use_honor_fix = 1
 
-        Misc.Pause(100)
+        pause_mage_loop(100)
 
-    Misc.Pause(100)
+    pause_mage_loop(100)

@@ -67,7 +67,7 @@ Only the newest running attack-script instance owns combat. Starting a new copy 
 - `MultiThreshold` and `MassThreshold` control when the script switches to multi-target or mass-area spells.
 - `HonorRange` controls the maximum Honor distance.
 - The nearest current visible hostile is selected; a previously selected or low-health distant target is not retained when a nearer mob appears.
-- Target lists are rebuilt during the combat cycle and again immediately before the offensive spell.
+- Mobile target lists are refreshed while the script is ready to act and revalidated when a spell cursor arrives. Cast recovery does not repeatedly rebuild unusable target lists.
 - Harmful targeted spells use a line-of-sight check. A mobile rejected for line of sight is reconsidered after it moves.
 - Blue mobiles, red humans and blue changelings are excluded by default unless their options are enabled.
 - Distance markers and the optional status overlay show current combat state without changing target selection.
@@ -83,6 +83,16 @@ Single-target selection can use MOBSLIST resistance data, prioritize enabled spe
 Available attacks include Magery circles, Word of Death, Eagle Strike, Bombard, Nether Cyclone, Hail Storm, Spell Plague, Wither, Poison Strike, Thunderstorm, Wildfire, Earthquake and an Explosion follow-up combo. The script falls back to another enabled spell when the preferred category is unavailable.
 
 Debuff options include Evil Omen, Curse, Corpse Skin, Strangle, Mind Rot, Poison, Sleep, Mass Sleep, Paralyze and Mana Vampire. Expensive debuffs can be skipped on trash targets.
+
+## Lighthouse and beacon attacks
+
+Enable `Attack Lighthouses` under `5: Single Target`. It defaults to off and saves immediately in the current character's profile. `Attack On` must also be enabled.
+
+When no hostile mobiles are in `AttackRange`, the script selects the nearest visible ground item matching `0x4724`, `0x9983` or `0x9984`. These cover intact and damaged Plunder Beacons and Blackthorn Dungeon lighthouses. Items are rescanned every 200 ms when the combat loop is ready; cached items are revalidated before targeting.
+
+The mage uses whichever supported direct-damage spells you enabled: Flame Strike, Energy Bolt, Eagle Strike, Bombard, Lightning, Fireball, Harm, Nether Bolt or Magic Arrow. Normal skill, mana, low-mana and recovery rules apply; Harm requires a target within two tiles. Mind Blast, finishers, AoE rotations, Honor, debuffs and pet commands are not used on item targets. Server vulnerability, range and line-of-sight rules still apply.
+
+An item that vanishes, changes to a destroyed graphic, leaves range or becomes disabled while casting causes the pending cursor to be cancelled safely. Late cursors use the existing cast-recovery logic.
 
 ## Nether Blast
 
@@ -158,3 +168,11 @@ This release is designed for UOAlive and English spell, buff, item and journal n
 - Sound alarms require Windows `winsound`.
 
 If using another shard, begin with offensive options disabled and verify spell names, follower costs, journal text and target rules before enabling automatic combat.
+
+## Optional companion coordination
+
+The mage attack script and GUMP work standalone. Shared inventory/combat timers coordinate only with external scripts that implement them; running the mage script does not automatically pause an unmodified Lootmaster.
+
+## Offline regression tests
+
+From the repository root, run `python3 -m unittest discover -s UltimateMageAttackScript/tests -p 'test_*.py'`. Tests use mocks; optional helper integration checks skip when their scripts are absent. Live shard behavior still requires in-game verification.

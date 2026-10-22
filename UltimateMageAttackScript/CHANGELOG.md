@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.52 - 2026-10-22
+
+### Added
+
+- Saved, opt-in `Attack Lighthouses` button under `5: Single Target`. Attacks Plunder Beacons and Blackthorn lighthouses within `AttackRange`, including intact and damaged graphics (`0x4724`, `0x9983`, `0x9984`). Hostile mobiles keep priority.
+- Lighthouse attacks use enabled Magery/Mysticism direct-damage spells, respecting mana, skills, low-mana mode, spell recovery and Blood Oath. Item targets are revalidated when the cursor arrives; mobile-only spells, Honor and debuffs are excluded.
+- Offline regression tests for mage reliability, shared action ownership, lighthouse settings and item-targeted casts.
+
+### Changed
+
+This release also publishes the local 0.49–0.51 reliability updates:
+
+- Targeted spells retain ownership of late cursors and verify successful target consumption. Each cast has a bounded recovery watchdog; routine buffs defer during combat.
+- Word of Death and Nether Blast follow-up attacks take priority over another mastery cast. Failed Nether Blast attempts release their pending state without extending the 5100 ms limit.
+- Debuff cooldowns are tracked per mobile. Server line-of-sight rejections are retried after player or target movement.
+- Mage casts and item/equipment actions coordinate through shared inventory/combat timers. Compatible helper scripts can yield; the mage script and GUMP still work standalone.
+- Character profiles save atomically. GUMP changes use a revision signal, with a fallback refresh for external settings changes.
+
+### Fixed
+
+- Generic action-wait messages no longer renew spell locks indefinitely or falsely report an interrupted cast.
+- Rejected, interrupted and delayed casts release or retain their cooldowns and cursor ownership according to the actual server response.
+- Routine buffs, repeated book swaps and failed summons no longer crowd out offensive spells in the same loop.
+
 ## 0.48 - 2026-08-28
 
 Initial public GitHub release.

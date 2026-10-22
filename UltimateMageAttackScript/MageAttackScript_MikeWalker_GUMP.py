@@ -1,6 +1,6 @@
 ### UO Ultimate Mage & Summoner Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.48 last edit 03.08.2026 ###
+### Version 0.52 last edit 22.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ###
 
@@ -21,6 +21,34 @@ PROFILE_FILENAME = "mage_settings_%s_%08X.json" % (
     safe_profile_name(Player.Name), int(Player.Serial))
 PROFILE_PATH = os.path.join(Misc.CurrentScriptDirectory(), PROFILE_FILENAME)
 
+def atomic_write_json(path, data):
+    """Write JSON beside its destination, then atomically replace it."""
+    temp_path = path + ".tmp"
+    try:
+        with open(temp_path, 'w') as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (AttributeError, OSError):
+                pass
+        replace = getattr(os, 'replace', None)
+        if replace is not None:
+            replace(temp_path, path)
+        elif os.path.exists(path):
+            # IronPython 2 has no os.replace; .NET provides atomic replacement.
+            from System.IO import File
+            File.Replace(temp_path, path, None)
+        else:
+            os.rename(temp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        raise
+
 setX = 100
 setY = 100
 
@@ -37,6 +65,11 @@ def SetSharedValue(sharedvalue):
     val = Misc.ReadSharedValue(sharedvalue)
     Misc.SetSharedValue(sharedvalue, 0 if val == 1 else 1)
     mark_settings_changed()
+
+
+def toggle_lighthouse_attacks(sharedvalue):
+    SetSharedValue(sharedvalue)
+    save_settings()
 
 
 def mySort(e):
@@ -61,8 +94,7 @@ def get_all_sv_keys():
 def save_settings():
     data = {k: Misc.ReadSharedValue(k) for k in sorted(get_all_sv_keys())}
     try:
-        with open(PROFILE_PATH, 'w') as f:
-            json.dump(data, f, indent=2, sort_keys=True)
+        atomic_write_json(PROFILE_PATH, data)
         Player.HeadMessage(68, "Settings saved: %s" % PROFILE_FILENAME)
     except Exception as e:
         Player.HeadMessage(33, "Save failed: %s" % str(e))
@@ -83,8 +115,7 @@ def load_settings():
             Misc.SetSharedValue(k, v)
         mark_settings_changed()
         if migrate_legacy:
-            with open(PROFILE_PATH, 'w') as f:
-                json.dump(data, f, indent=2, sort_keys=True)
+            atomic_write_json(PROFILE_PATH, data)
             Player.HeadMessage(68, "Legacy settings migrated: %s" % PROFILE_FILENAME)
         else:
             Player.HeadMessage(68, "Settings loaded: %s" % PROFILE_FILENAME)
@@ -702,7 +733,7 @@ sections = {
             'skillValue': 83,
             'sharedvalue': "use_wordofdeath",
             'task': SetSharedValue,
-            'tooltip': "SW: Word of Death — instantly kills mob below 10% HP. 50 mana, 3.5s cast.",
+            'tooltip': "SW: Word of Death — priority finisher below 30% target HP. Skips known mobs with 500 max HP or less. 50 mana, 3.5s cast. Damage depends on Arcane Focus.",
             },
         'FlameStrike':
             {
@@ -811,6 +842,13 @@ sections = {
             'displayvalue': "combo_followup",
             'options': ["energybolt", "flamestrike", "mindblast", "lightning"],
             'tooltip': "Spell paired with Explosion in the combo. Click to cycle: EB / FS / MB / Lit.",
+            },
+        'Attack Lighthouses':
+            {
+            'buttontype': "setsharedvalue",
+            'sharedvalue': "use_attack_lighthouses",
+            'task': toggle_lighthouse_attacks,
+            'tooltip': "Opt in to Plunder Beacon / Blackthorn lighthouse item attacks within AttackRange. Uses enabled direct-damage spells after hostile mobs; includes damaged graphics. Saves per character.",
             },
     },
 
