@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.38 last edit 22.10.2026 ###
+### Version 1.39 last edit 23.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -439,8 +439,8 @@ sections = {
                 'buttontype':"setvalue",
                 'displayvalue':"honordistance",
                 'minValue':1,
-                'maxValue':25,
-                'tooltip':"Range to honor mobs (Default == Max: 10 tiles)",
+                'maxValue':12,
+                'tooltip':"Range to honor full-health mobs (Default: 10, Max: 12 tiles)",
                 },
             'NearbyRange':
                 {

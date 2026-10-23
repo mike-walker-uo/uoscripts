@@ -69,12 +69,12 @@ class CombatReviewTests(unittest.TestCase):
         self.assertEqual(self.ns['_last_equipped_weapon_layer'], 'LeftHand')
         self.assertEqual(self.calls, [weapon.Serial, weapon.Serial])
 
-    def test_honor_chooses_closest_full_health_mob_in_range(self):
+    def prepare_honor_tick(self):
         mobs = [Obj(Serial=n, Name=str(n), Hits=hits, HitsMax=100, Deleted=False)
                 for n, hits in [(1, 70), (2, 100), (3, 100), (4, 100)]]
         distances = {1: 2, 2: 4, 3: 3, 4: 11}
         cursor = [False]
-        self.timers.update({name: 1000 for name in
+        self.timers.update({name: 10000 for name in
                             ('sv_refresh', 'dress', 'mobscan', 'weaponcheck')})
         self.ns.update(
             sv={'activeattack': 1, 'attackrange': 12, 'use_pet_sync': 0, 'nearbyrange': 1, 'use_df': 0, 'use_cw': 0,
@@ -106,10 +106,13 @@ class CombatReviewTests(unittest.TestCase):
             self.ns[name] = lambda *args: None
         self.ns['continue_hidden_backstab'] = lambda: False
         self.ns['backstab_locked_target'] = lambda victims: None
+        return mobs, distances, cursor
 
+    def test_honor_chooses_closest_full_health_mob_in_range(self):
+        mobs, distances, cursor = self.prepare_honor_tick()
         self.ns['run_tick']()
         self.assertIn(('fight', 1), self.calls)
-        self.assertLess(self.calls.index(('fight', 1)), self.calls.index(('virtue', 'Honor')))
+        self.assertLess(self.calls.index(('virtue', 'Honor')), self.calls.index(('fight', 1)))
         self.assertNotIn(('honor', 3), self.calls)
         self.assertEqual(self.ns['_flow']['cursor']['target'].Serial, 3)
 
@@ -125,6 +128,129 @@ class CombatReviewTests(unittest.TestCase):
         distances.update({2: 11, 3: 12})
         self.ns['run_tick']()
         self.assertFalse(any(call[0] == 'honor' for call in self.calls))
+
+    def prepare_archer_honor_tick(self):
+        mobs, distances, cursor = self.prepare_honor_tick()
+        self.ns['_is_ranged_build'] = True
+        self.ns['_victims_cache'] = [mobs[1]]
+        return mobs[1], distances, cursor
+
+    def test_archer_honors_before_first_attack_and_optional_buffs(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        self.ns['combat_buffs'] = lambda: self.calls.append(('buff',))
+        self.ns['run_tick']()
+        self.assertIn(('virtue', 'Honor'), self.calls)
+        self.assertNotIn(('fight', mob.Serial), self.calls)
+        self.assertNotIn(('buff',), self.calls)
+        self.assertEqual(self.ns['_flow']['cursor']['target'].Serial, mob.Serial)
+
+        cursor[0] = True
+        self.now = 200
+        self.ns['run_tick']()
+        self.assertLess(self.calls.index(('honor', mob.Serial)),
+                        self.calls.index(('fight', mob.Serial)))
+        self.assertIn(('buff',), self.calls)
+
+    def test_missing_honor_cursor_delays_archer_at_most_one_second(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        self.ns['run_tick']()
+        self.now = 999
+        self.ns['run_tick']()
+        self.assertNotIn(('fight', mob.Serial), self.calls)
+        self.now = 1000
+        self.ns['run_tick']()
+        self.assertIn(('fight', mob.Serial), self.calls)
+        self.assertTrue(self.ns['_flow']['cursor']['cancel'])
+        self.assertEqual(self.calls.count(('virtue', 'Honor')), 1)
+        cursor[0] = True  # A late response must not target a mob after combat starts.
+        self.ns['Target'].Cancel = lambda: cursor.__setitem__(0, False)
+        self.ns['run_tick']()
+        self.assertNotIn(('honor', mob.Serial), self.calls)
+        self.assertFalse(cursor[0])
+
+    def test_damaged_opening_target_resumes_attack_without_honor(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        self.ns['run_tick']()
+        mob.Hits = 99
+        cursor[0] = True
+        self.ns['Target'].Cancel = lambda: cursor.__setitem__(0, False)
+        self.ns['run_tick']()
+        self.assertIn(('fight', mob.Serial), self.calls)
+        self.assertNotIn(('honor', mob.Serial), self.calls)
+        self.assertFalse(cursor[0])
+
+    def test_existing_archer_attack_continues_during_honor(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        self.ns['_flow']['last_attack'] = mob.Serial
+        self.ns['run_tick']()
+        self.assertIn(('virtue', 'Honor'), self.calls)
+        self.assertIn(('fight', mob.Serial), self.calls)
+
+    def test_damaged_current_target_keeps_fighting_while_next_mob_is_honored(self):
+        mobs, distances, cursor = self.prepare_honor_tick()
+        self.ns['_is_ranged_build'] = True
+        self.ns['_flow']['last_attack'] = mobs[0].Serial
+        self.ns['run_tick']()
+        self.assertIn(('fight', mobs[0].Serial), self.calls)
+        self.assertEqual(self.ns['_flow']['cursor']['target'].Serial, mobs[2].Serial)
+
+    def test_fresh_archer_target_takes_honor_priority_over_nearer_mob(self):
+        mobs, distances, cursor = self.prepare_honor_tick()
+        self.ns['_is_ranged_build'] = True
+        self.ns['_victims_cache'] = mobs[1:3]
+        self.ns['select_combat_target'] = lambda *args: mobs[1]
+        self.ns['run_tick']()
+        self.assertEqual(self.ns['_flow']['cursor']['target'].Serial, mobs[1].Serial)
+        self.assertNotIn(('fight', mobs[1].Serial), self.calls)
+
+    def test_adjacent_enemy_does_not_wait_for_honor(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        distances[mob.Serial] = 1
+        self.ns['run_tick']()
+        self.assertIn(('fight', mob.Serial), self.calls)
+
+    def test_honor_off_or_busy_cursor_does_not_delay_attack(self):
+        for reason in ('off', 'cursor', 'spells', 'honored', 'unknown_hp'):
+            with self.subTest(reason=reason):
+                self.setUp()
+                mob, distances, cursor = self.prepare_archer_honor_tick()
+                if reason == 'off':
+                    self.ns['sv']['use_honor'] = 0
+                elif reason == 'cursor':
+                    cursor[0] = True
+                elif reason == 'spells':
+                    self.timers['spells'] = 1000
+                elif reason == 'honored':
+                    self.ns['Player'].BuffsExist = lambda name: name == 'Honored'
+                else:
+                    mob.Hits = mob.HitsMax = 0
+                self.ns['run_tick']()
+                self.assertNotIn(('virtue', 'Honor'), self.calls)
+                self.assertIn(('fight', mob.Serial), self.calls)
+
+    def test_saved_honor_range_above_server_limit_is_capped(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        self.ns['sv'].update(attackrange=16, honordistance=14)
+        distances[mob.Serial] = 13
+        self.ns['run_tick']()
+        self.assertNotIn(('virtue', 'Honor'), self.calls)
+        self.assertIn(('fight', mob.Serial), self.calls)
+        distances[mob.Serial] = 12
+        self.calls.clear()
+        self.ns['run_tick']()
+        self.assertIn(('virtue', 'Honor'), self.calls)
+
+    def test_pending_honor_is_cancelled_if_target_moves_out_of_range(self):
+        mob, distances, cursor = self.prepare_archer_honor_tick()
+        self.ns['sv'].update(attackrange=16, honordistance=14)
+        self.ns['run_tick']()
+        distances[mob.Serial] = 13
+        cursor[0] = True
+        self.ns['Target'].Cancel = lambda: cursor.__setitem__(0, False)
+        self.ns['run_tick']()
+        self.assertNotIn(('honor', mob.Serial), self.calls)
+        self.assertIn(('fight', mob.Serial), self.calls)
+        self.assertFalse(cursor[0])
 
     def test_pet_cursor_timeout_retries_same_target(self):
         cursor = [False]

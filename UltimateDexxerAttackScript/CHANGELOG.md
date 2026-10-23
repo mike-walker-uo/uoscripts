@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.39 - 2026-10-23
+
+### Fixed
+
+- Honor gets priority over attacks, optional buffs and pet commands. Fresh ranged targets get up to one second for Honor targeting before the first attack; existing attacks and melee engagement continue immediately.
+- Fresh ranged attack targets take Honor priority over other full-health mobs. Damaged current targets still allow honoring the next eligible mob.
+- Honor attempts and pending cursors respect the 12-tile server range, including profiles saved with larger ranges. GUMP maximum and tooltip now match.
+- Added regression tests for ranged Honor timing, missing/late cursors, damaged targets, uninterrupted combat and range checks.
+
 ## 1.38 - 2026-10-22
 
 ### Added

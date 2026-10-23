@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.38 last edit 22.10.2026 ###
+### Version 1.39 last edit 23.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -1332,7 +1332,7 @@ def service_cursor():
         if kind == 'honor':
             valid = (valid and sv['use_honor'] == 1 and target.HitsMax > 0 and
                      target.Hits == target.HitsMax and
-                     Player.DistanceTo(target) <= sv['honordistance'])
+                     Player.DistanceTo(target) <= min(sv['honordistance'], 12))
         else:
             valid = valid and sv['use_pet_sync'] == 1
     else:
@@ -3075,6 +3075,31 @@ def select_combat_target(victims_dist, changeling_serials):
     return chosen
 
 
+def prepare_honor(nearest, victims_dist):
+    if (sv['use_honor'] == 1 and
+            not Player.BuffsExist('Bload Oath (curse)') and
+            (not Player.BuffsExist('Honored') or use_honor_fix == 1) and
+            not Timer.Check('honorattempt')):
+        candidates = [(mob, distance) for mob, distance in victims_dist
+                      if 0 <= distance <= min(sv['honordistance'], 12) and
+                      mob.HitsMax > 0 and mob.Hits == mob.HitsMax]
+        if candidates:
+            # Give a fresh ranged attack target first claim before its arrow lands.
+            opening = next((mob for mob, distance in candidates
+                            if mob.Serial == nearest.Serial and _is_ranged_build and
+                            _flow['last_attack'] != nearest.Serial), None)
+            target = opening or min(candidates, key=lambda md: md[1])[0]
+            if start_cursor('honor', target, lambda: Player.InvokeVirtue("Honor")):
+                Timer.Create('honorattempt', 1000)
+
+    job = _flow['cursor']
+    # Poll across ticks for at most one second. Existing attacks and melee continue.
+    return bool(_is_ranged_build and not _flow['melee'] and
+                _flow['last_attack'] != nearest.Serial and job and
+                job['kind'] == 'honor' and job['target'].Serial == nearest.Serial and
+                not job.get('cancel') and Timer.Check('owned_cursor'))
+
+
 def run_tick():
     global use_honor_fix, _victims_cache, _changelings_cache
     _flow.update(spell_used=False, ability_used=False, cursor_used=False)
@@ -3170,6 +3195,10 @@ def run_tick():
 
         publish_attack_target(nearest)
 
+        if prepare_honor(nearest, victims_dist):
+            Misc.Pause(100)
+            return
+
         # Slayer swap BEFORE engaging — the matching slayer must be in hand
         # when the swings land. Gated internally (group change + cooldown).
         slayer_swap_tick(nearest)
@@ -3209,16 +3238,6 @@ def run_tick():
             if sv['use_thunderstorm'] == 1 and len(victims_9) - len(victims_1) > 3:
                 run_spell_priority((thunderstorm,))
             run_spell_priority((playingtheodds, castsummonfey, checkwhitetigerform))
-        if sv['use_honor'] == 1:
-            if ((Player.BuffsExist('Honored') == False or use_honor_fix == 1) and
-                    Timer.Check('honorattempt') == False):
-                honor_candidates = [(mob, distance) for mob, distance in victims_dist
-                                    if distance <= sv['honordistance'] and mob.Hits == mob.HitsMax]
-                if honor_candidates:
-                    honor_target = min(honor_candidates, key=lambda md: md[1])[0]
-                    if start_cursor('honor', honor_target, lambda: Player.InvokeVirtue("Honor")):
-                        Timer.Create('honorattempt', 1000)
-
         Misc.Pause(100)
             
     elif lighthouse is not None and sv['activeattack'] == 1:

@@ -38,7 +38,7 @@ The GUMP hides options when the character does not meet their skill requirements
 
 - `AttackRange` controls how far away a mobile may be before the script considers it a target.
 - `NearbyRange` controls the single-target and multi-target combat logic. It can be set wider than melee range; Momentum Strike can hit separated targets.
-- `HonorRange` controls the maximum distance for Honor attempts. With Honor enabled, the script selects the closest full-health eligible mobile, even while attacking a damaged target. It keeps attacking while waiting for the Honor cursor. Honor is normally skipped while the Honored buff is active.
+- `HonorRange` controls Honor attempts, up to 12 tiles (default 10). Honor runs before optional buffs and pet commands. A fresh ranged attack target gets priority and up to one second for the Honor cursor before its first attack; missing cursors do not stall combat indefinitely. Existing attacks and melee engagement continue immediately. While attacking a damaged target, the script can honor the closest full-health eligible mob. Honor is normally skipped while the Honored buff is active.
 - The script can attack the nearest target, favor a low-health target in a melee group, prioritize changelings, or use the optional smart-target scoring.
 - Blue mobiles and red humans are excluded by default. Both filters can be changed in the GUMP, but enabling them can attack players or other unintended targets.
 - For melee builds, an adjacent enemy takes priority over a distant target, including a controller preference. Otherwise, targets remain stable until invalid, outranked or stalled for eight seconds without progress.
