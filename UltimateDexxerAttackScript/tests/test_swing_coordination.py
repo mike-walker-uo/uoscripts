@@ -136,16 +136,17 @@ class SwingCoordinationTests(unittest.TestCase):
         self.ns['engage_target'](second)
         self.assertEqual(self.calls.count(('attack', 3)), 2)
 
-    def test_optional_casts_defer_in_melee_without_starting_cooldowns(self):
+    def test_requested_spells_cast_in_melee_but_healing_still_defers(self):
         self.ns['_flow']['melee'] = True
-        for spell in ('Consecrate Weapon', 'Enemy Of One', 'Curse Weapon', 'Mirror Image',
-                      'Playing The Odds', 'Immolating Weapon'):
+        for spell in ('Enemy Of One', 'Consecrate Weapon', 'Divine Fury', 'Curse Weapon',
+                      'Attune Weapon', 'Immolating Weapon', 'Counter Attack', 'Playing The Odds',
+                      'Holy Light', 'Thunderstorm', 'Summon Fey'):
+            with self.subTest(spell=spell):
+                self.assertTrue(self.ns['cast_action'](lambda name: self.calls.append(name), spell))
+                self.world.tick(250)
+        for spell in ('Cleanse by fire', 'Close Wounds', 'Remove Curse'):
             with self.subTest(spell=spell):
                 self.assertFalse(self.ns['cast_action'](lambda *args: self.fail(), spell))
-        self.assertNotIn('spells', self.world.timers)
-        self.assertFalse(self.ns['_flow']['spell_used'])
-        self.ns['_flow']['melee'] = False
-        self.assertTrue(self.ns['cast_action'](lambda spell: self.calls.append(spell), 'Consecrate Weapon'))
 
     def test_defense_moves_and_opted_in_stamina_rescue_remain_available(self):
         self.ns['_flow']['melee'] = True
@@ -156,14 +157,38 @@ class SwingCoordinationTests(unittest.TestCase):
         self.assertTrue(self.ns['cast_action'](lambda spell: self.calls.append(spell), 'Divine Fury'))
         self.assertEqual(self.calls, ['Confidence', 'Divine Fury'])
 
-    def test_dress_and_automatic_slayers_yield_during_combat(self):
+    def test_dress_yields_during_combat(self):
         self.ns['publish_combat_activity']([(self.world.mob(), 1)])
         self.ns['sv']['use_dresslist'] = 1
         self.ns['Dress'] = Obj(ChangeList=lambda *args: self.fail(), DressFStart=lambda: self.fail())
         self.ns['dresslist']()
-        self.ns['slayer_swap_tick'](self.world.mob())
         self.assertTrue(self.ns['Timer'].Check('attack_combat_busy'))
         self.assertIsNone(self.ns['_flow']['equipment'])
+
+    def test_automatic_slayer_swaps_are_queued_with_adjacent_mob(self):
+        for is_weapon in (True, False):
+            with self.subTest(is_weapon=is_weapon):
+                self.setUp()
+                item = self.world.item(18)
+                entry = {'serial': item.Serial, 'name': 'Slayer'}
+                self.ns.update(_last_slayer_target_group=None,
+                               _slayer_weapon_by_group={'undead': entry},
+                               _slayer_talisman_by_group={'undead': entry},
+                               load_slayer_sets=lambda: None,
+                               slayer_group_for_mob=lambda mob: 'undead')
+                self.ns['sv'].update(use_slayer_swap=int(is_weapon),
+                                     use_slayer_talisman=int(not is_weapon))
+                mob = self.world.mob(distance=1)
+                self.ns['publish_combat_activity']([(mob, 1)])
+                self.ns['slayer_swap_tick'](mob)
+                job = self.ns['_flow']['equipment']
+                self.assertEqual(job['serial'], item.Serial)
+                self.assertEqual(job['is_weapon'], is_weapon)
+                self.assertTrue(self.ns['Timer'].Check('slayerswap'))
+                self.ns['advance_equipment']()
+                self.world.tick(600)
+                self.ns['advance_equipment']()
+                self.assertIn(('equip', item.Serial), self.calls)
 
     def test_combat_busy_signal_expires_after_script_stops(self):
         self.ns['publish_combat_activity']([(self.world.mob(), 1)])

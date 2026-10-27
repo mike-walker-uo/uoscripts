@@ -370,11 +370,115 @@ class CombatFlowTests(unittest.TestCase):
         self.ns['fighting'] = lambda mob, *args: self.calls.append('fighting')
         self.ns['Misc'].Pause = lambda ms: self.calls.append(('pause', ms))
 
+    def prepare_mirror_image(self):
+        self.player.Mount = False
+        self.player.GetSkillValue = lambda name: 120
+        self.ns['sv'].update(use_mirrorimage=1, use_messages=0)
+        self.ns.update(MIRROR_IMAGE_FOLLOWER_THRESHOLD=3, _cached_castpause=0,
+                       calc_castspeed=lambda ms: ms,
+                       Spells=Obj(CastNinjitsu=lambda spell: self.calls.append(('cast', spell))))
+
+    def test_melee_loop_checks_requested_spell_priorities(self):
+        mobs = [self.mob(serial=2, distance=1)] + [self.mob(serial=i, distance=2) for i in range(3, 7)]
+        self.setup_loop(mobs)
+        self.ns['sv']['use_thunderstorm'] = 1
+        self.ns['thunderstorm'] = lambda: self.calls.append('thunderstorm')
+        self.ns['run_tick']()
+        for action in ('curseweapon', 'combat_buffs', 'attuneweapon', 'immolatingweapon',
+                       'counterattack', 'holylight', 'thunderstorm', 'playingtheodds', 'castsummonfey'):
+            with self.subTest(action=action):
+                self.assertIn(action, self.calls)
+                self.assertLess(self.calls.index('fighting'), self.calls.index(action))
+
+    def test_loop_casts_mirror_image_with_adjacent_mob(self):
+        castmirrorimage = self.ns['castmirrorimage']
+        self.setup_loop([self.mob(distance=1)])
+        self.prepare_mirror_image()
+        self.ns['castmirrorimage'] = castmirrorimage
+        self.ns['run_tick']()
+        self.assertTrue(self.ns['_flow']['melee'])
+        self.assertIn(('cast', 'Mirror Image'), self.calls)
+        self.assertLess(self.calls.index('fighting'), self.calls.index(('cast', 'Mirror Image')))
+        self.assertTrue(self.ns['_flow']['spell_used'])
+        self.assertEqual(self.timers['spells'], 1500)
+        self.ns['run_tick']()
+        self.assertEqual(self.calls.count(('cast', 'Mirror Image')), 1)
+
+    def test_loop_casts_white_tiger_with_adjacent_mob(self):
+        checkwhitetigerform = self.ns['checkwhitetigerform']
+        self.setup_loop([self.mob(distance=1)])
+        self.player.GetSkillValue = lambda name: 120
+        self.ns['sv'].update(use_whitetigerform=1, use_messages=0)
+        self.ns.update(_cached_castpause=0, calc_castspeed=lambda ms: ms,
+                       Spells=Obj(CastMastery=lambda spell: self.calls.append(('cast', spell))))
+        self.ns['checkwhitetigerform'] = checkwhitetigerform
+        self.ns['run_tick']()
+        self.assertIn(('cast', 'White Tiger Form'), self.calls)
+        self.assertLess(self.calls.index('fighting'), self.calls.index(('cast', 'White Tiger Form')))
+        self.ns['run_tick']()
+        self.assertEqual(self.calls.count(('cast', 'White Tiger Form')), 1)
+
+    def test_melee_white_tiger_still_checks_requirements(self):
+        for reason in ('disabled', 'skill', 'buff', 'blood_oath', 'paralyzed', 'mana', 'cooldown', 'cursor'):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.player.GetSkillValue = lambda name: 120
+                self.ns['sv'].update(use_whitetigerform=1, use_messages=0)
+                self.ns.update(_cached_castpause=0, calc_castspeed=lambda ms: ms,
+                               Spells=Obj(CastMastery=lambda spell: self.calls.append(('cast', spell))))
+                self.ns['_flow']['melee'] = True
+                if reason == 'disabled':
+                    self.ns['sv']['use_whitetigerform'] = 0
+                elif reason == 'skill':
+                    self.player.GetSkillValue = lambda name: 119
+                elif reason == 'buff':
+                    self.buffs.add('White Tiger Form')
+                elif reason == 'blood_oath':
+                    self.buffs.add('Bload Oath (curse)')
+                elif reason == 'paralyzed':
+                    self.player.Paralized = True
+                elif reason == 'mana':
+                    self.player.Mana = 9
+                elif reason == 'cooldown':
+                    self.create_timer('white_tiger_form', 1000)
+                elif reason == 'cursor':
+                    self.cursor = True
+                self.ns['checkwhitetigerform']()
+                self.assertNotIn(('cast', 'White Tiger Form'), self.calls)
+
+    def test_melee_mirror_image_still_requires_resources_and_free_casting(self):
+        for reason in ('disabled', 'no_mob', 'followers', 'mounted', 'paralyzed',
+                       'skill', 'mana', 'cooldown', 'cursor', 'cast_this_tick'):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.prepare_mirror_image()
+                self.ns['_flow']['melee'] = True
+                if reason == 'disabled':
+                    self.ns['sv']['use_mirrorimage'] = 0
+                elif reason == 'followers':
+                    self.player.Followers = 3
+                elif reason == 'mounted':
+                    self.player.Mount = True
+                elif reason == 'paralyzed':
+                    self.player.Paralized = True
+                elif reason == 'skill':
+                    self.player.GetSkillValue = lambda name: 19
+                elif reason == 'mana':
+                    self.player.Mana = 9
+                elif reason == 'cooldown':
+                    self.create_timer('spells', 1000)
+                elif reason == 'cursor':
+                    self.cursor = True
+                elif reason == 'cast_this_tick':
+                    self.ns['_flow']['spell_used'] = True
+                self.ns['castmirrorimage'](reason != 'no_mob')
+                self.assertNotIn(('cast', 'Mirror Image'), self.calls)
+
     def test_loop_runs_emergencies_then_combat_then_background(self):
         self.setup_loop([self.mob()])
         self.ns['run_tick']()
         self.assertLess(self.calls.index('checkbloodoath'), self.calls.index('fighting'))
-        self.assertNotIn('combat_buffs', self.calls)
+        self.assertLess(self.calls.index('fighting'), self.calls.index('combat_buffs'))
         for name in ('checkweight', 'drop_heirloom_chests', 'move_artifacts_to_lootbag'):
             self.assertNotIn(name, self.calls)
         self.assertNotIn('closewounds', self.calls)

@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.40 last edit 27.10.2026 ###
+### Version 1.41 last edit 27.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -1035,8 +1035,6 @@ def advance_equipment():
 
 def slayer_swap_tick(nearest):
     global _last_slayer_target_group
-    if _flow['melee']:
-        return
     if sv['use_slayer_swap'] != 1 and sv['use_slayer_talisman'] != 1:
         return
     # pick up registrations the main GUMP saved while we run
@@ -1376,11 +1374,13 @@ def cast_action(cast, spell, *args):
     if _flow['melee']:
         safe_move = spell in ('Counter Attack', 'Confidence', 'Evasion', 'Onslaught',
                               'Honorable Execution', 'Death Strike', 'Focus Attack',
-                              'Backstab', 'Lightning Strike', 'Momentum Strike')
+                              'Backstab', 'Lightning Strike', 'Momentum Strike', 'Mirror Image',
+                              'White Tiger Form', 'Enemy Of One', 'Consecrate Weapon',
+                              'Divine Fury', 'Curse Weapon', 'Attune Weapon',
+                              'Immolating Weapon', 'Playing The Odds', 'Holy Light',
+                              'Thunderstorm', 'Summon Fey')
         curse_rescue = spell == 'Remove Curse' and Player.BuffsExist('Bload Oath (curse)')
-        stamina_rescue = (spell == 'Divine Fury' and sv.get('use_df_lowstam') == 1 and
-                          Player.Stam < sv['df_stam_threshold'])
-        if not (safe_move or curse_rescue or stamina_rescue):
+        if not (safe_move or curse_rescue):
             return False
     attack_move = spell in ('Onslaught', 'Honorable Execution', 'Death Strike',
                             'Focus Attack', 'Backstab', 'Lightning Strike', 'Momentum Strike')
@@ -2766,7 +2766,7 @@ def fighting(nearest, victims_6, victims_10, nearby_enemies, attackrange_enemy_c
                 Timer.Create('blockspecials',1500)                
             
                 
-        if not _flow['melee'] and sv['use_eoo'] == 1 and Timer.Check("eoo") == False:
+        if sv['use_eoo'] == 1 and Timer.Check("eoo") == False:
             mob_ids = {mob.MobileID for mob in victims_10}
             #Player.HeadMessage(50, "Enemy types: %i" % len(mob_ids))
             if len(victims_6) == 1 or len(mob_ids) <= 1:
@@ -3276,12 +3276,11 @@ def run_tick():
         auto_move_closer(nearest)
         if not victims_6:
             run_spell_priority((removepoison, removecurse, closewounds))
-        if not _flow['melee']:
-            run_spell_priority((curseweapon, combat_buffs, attuneweapon, immolatingweapon, counterattack,
-                                lambda: castmirrorimage(True), lambda: holylight(victims_3)))
-            if sv['use_thunderstorm'] == 1 and len(victims_9) - len(victims_1) > 3:
-                run_spell_priority((thunderstorm,))
-            run_spell_priority((playingtheodds, castsummonfey, checkwhitetigerform))
+        run_spell_priority((curseweapon, combat_buffs, attuneweapon, immolatingweapon, counterattack,
+                            lambda: castmirrorimage(True), lambda: holylight(victims_3)))
+        if sv['use_thunderstorm'] == 1 and len(victims_9) - len(victims_1) > 3:
+            run_spell_priority((thunderstorm,))
+        run_spell_priority((playingtheodds, castsummonfey, checkwhitetigerform))
         Misc.Pause(100)
             
     elif lighthouse is not None and sv['activeattack'] == 1:

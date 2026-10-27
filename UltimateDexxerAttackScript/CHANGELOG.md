@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.41 - 2026-10-27
+
+### Changed
+
+- Mirror Image, White Tiger Form and combat buffs can cast with adjacent enemies; their existing requirements still apply.
+- Automatic slayer weapon and talisman swaps can run with adjacent enemies.
+- Added regression tests for melee casting and slayer swaps.
+
 ## 1.40 - 2026-10-27
 
 ### Added

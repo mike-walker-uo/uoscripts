@@ -67,13 +67,13 @@ Available combat options also include Honor, Enemy of One, Divine Fury, Consecra
 
 ## Low-stamina Divine Fury
 
-Under `3: Attacks`, enable `DF Low Stam` to cast Divine Fury when stamina falls below an absolute threshold. This option defaults to off and is independent of the existing `DivineFury` pre-attack toggle.
+Under `3: Attacks`, enable `DF Low Stam` to cast Divine Fury when stamina falls below an absolute threshold. This option defaults to off and is independent of the existing `DivineFury` toggle.
 
 Enter a positive whole number in `DF Stam <:` and click its `Save` button. The default is 180; stamina equal to the threshold does not trigger a cast. Both this threshold and the opt-in toggle save immediately to the character profile. Casting still requires sufficient mana, no Paralyze, a clear spell timer and no existing Divine Fury buff.
 
 ## Ninjitsu
 
-- `Mirror Image` casts only when an attackable mobile is within `AttackRange`, the character is not mounted and fewer than three follower slots are occupied.
+- `Mirror Image` casts when an attackable mobile is within `AttackRange`, including adjacent enemies, the character is not mounted and fewer than three follower slots are occupied.
 - `Release Mirror` releases one verified Mirror Image when exactly four follower slots are occupied. It only releases an image while an attackable mobile is nearby, because releasing one without a target can cause bleed damage on UOAlive.
 - When Mirror Image is enabled, Holy Light waits until three follower slots are occupied. Holy Light also requires at least three enemies within three tiles.
 - `White Tiger Form` maintains the Ninjitsu mastery form when the character has 120 Ninjitsu and 120 Stealth. Casting the form dismounts the character.
@@ -108,7 +108,7 @@ The `Slayer Sets` tab manages per-character weapons and talismans for Undead, Re
 - Target an item to register it as a weapon or talisman.
 - Enable automatic weapon swapping, talisman swapping or both.
 - Select a registered item manually to equip it and place the current target group on hold.
-- Hold mode ends when the target group changes, returning control to automatic swapping.
+- Hold mode ends when the target group changes, returning control to automatic swapping. Automatic swaps also work with adjacent enemies.
 - A neutral `none` entry can restore a default weapon or talisman when no slayer group matches.
 
 ## Healing, defense and supplies

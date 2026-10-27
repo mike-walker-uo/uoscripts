@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.40 last edit 27.10.2026 ###
+### Version 1.41 last edit 27.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -794,7 +794,7 @@ sections = {
                 'skillValue':20,
                 'sharedvalue':"use_mirrorimage",
                 'task':SetSharedValue,
-                'tooltip':"Cast Mirror Image only while a mob is within AttackRange and fewer than 3 follower slots are occupied. Stops at 3 occupied slots; cannot cast while mounted.",
+                'tooltip':"Cast Mirror Image while a mob is within AttackRange, including adjacent enemies, and fewer than 3 follower slots are occupied. Stops at 3 occupied slots; cannot cast while mounted.",
                 },
                 'Release Mirror':
                 {
