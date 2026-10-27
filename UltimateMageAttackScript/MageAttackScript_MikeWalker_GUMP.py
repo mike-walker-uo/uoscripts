@@ -1,6 +1,6 @@
 ### UO Ultimate Mage & Summoner Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.52 last edit 22.10.2026 ###
+### Version 0.53 last edit 27.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ###
 

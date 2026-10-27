@@ -27,7 +27,7 @@ class MageLighthouseTests(unittest.TestCase):
         self.scans = []
         self.settings = {}
         self.buffs = set()
-        self.ns.update(List=GenericList, LIGHTHOUSE_ITEM_IDS=(0x4724, 0x9983, 0x9984),
+        self.ns.update(List=GenericList, Int32=int, LIGHTHOUSE_ITEM_IDS=(0x4724, 0x9983, 0x9984),
                        _lighthouse_cache=[], skill_value=lambda school: 120,
                        mana_cost=lambda mana: mana, low_mana=lambda: False,
                        did_fizzle=lambda started: False)

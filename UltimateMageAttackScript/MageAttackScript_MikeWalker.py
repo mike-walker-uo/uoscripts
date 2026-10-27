@@ -1,6 +1,6 @@
 ### UO Ultimate Mage Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.52 last edit 22.10.2026 ###
+### Version 0.53 last edit 27.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to Python Script Section in Razor Enhanced ###
 ### START THE ATTACK SCRIPT FIRST — then start the GUMP script ###
@@ -10,7 +10,7 @@ import time
 import json
 import os
 from System.Collections.Generic import List
-from System import Byte
+from System import Byte, Int32
 from System.Threading import Monitor
 
 LEGACY_PROFILE_PATH = os.path.join(Misc.CurrentScriptDirectory(), "mage_settings.json")
@@ -1341,7 +1341,7 @@ def find_lighthouse():
         fil.OnGround = 1
         fil.Movable = 0
         fil.RangeMax = sv['attackrange']
-        fil.Graphics = List[int](LIGHTHOUSE_ITEM_IDS)
+        fil.Graphics = List[Int32](LIGHTHOUSE_ITEM_IDS)
         _lighthouse_cache = Items.ApplyFilter(fil)
         Timer.Create('mage_lighthouse_scan', 200)
     candidates = [item for item in _lighthouse_cache if valid_lighthouse(item)]

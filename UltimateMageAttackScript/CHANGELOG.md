@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53 - 2026-10-27
+
+### Fixed
+
+- Lighthouse graphics filters use the explicit .NET `List[Int32]` type, fixing the Razor Enhanced collection type error.
+- Updated the lighthouse test fixture for the .NET type import.
+
 ## 0.52 - 2026-10-22
 
 ### Added
