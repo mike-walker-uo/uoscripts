@@ -41,7 +41,9 @@ The GUMP hides options when the character does not meet their skill requirements
 - `HonorRange` controls Honor attempts, up to 12 tiles (default 10). Honor runs before optional buffs and pet commands. A fresh ranged attack target gets priority and up to one second for the Honor cursor before its first attack; missing cursors do not stall combat indefinitely. Existing attacks and melee engagement continue immediately. While attacking a damaged target, the script can honor the closest full-health eligible mob. Honor is normally skipped while the Honored buff is active.
 - The script can attack the nearest target, favor a low-health target in a melee group, prioritize changelings, or use the optional smart-target scoring.
 - Blue mobiles and red humans are excluded by default. Both filters can be changed in the GUMP, but enabling them can attack players or other unintended targets.
-- For melee builds, an adjacent enemy takes priority over a distant target, including a controller preference. Otherwise, targets remain stable until invalid, outranked or stalled for eight seconds without progress.
+- For melee builds, an adjacent enemy takes priority over a distant target. Otherwise, targets remain stable until invalid, outranked or stalled for eight seconds without progress.
+- `Move Closer Msg` under `3: Attacks` warns melee characters after the nearest mob stays 2-3 tiles away for one second, repeating every three seconds. It defaults to on.
+- `Auto Move Closer` under `3: Attacks` is off by default. With Attack on, it approaches a selected mob from 2-3 tiles away, stopping within one tile. It moves one pathfinding step at a time and pauses while hidden, paralyzed, casting or under Blood Oath. Both toggles save per character; ranged builds are excluded. Keep `AttackRange` at least 3 to detect mobs throughout this range.
 - Distance markers show whether the selected target is within the configured combat range.
 - Pet Sync sends `all kill` when the selected target changes without repeating the command on every loop.
 
@@ -134,7 +136,7 @@ The `Slayer Sets` tab manages per-character weapons and talismans for Undead, Re
 
 ## Optional companion coordination
 
-Only the attack script and GUMP are required. Compatible external scripts can read `attack_combat_busy` and `attack_inventory_busy` to defer background work, reserve targeting with `attack_external_target_busy`, and coordinate targets through `attack_selected_target` / `attack_controller_target`. Missing timers do not block standalone operation.
+Only the attack script and GUMP are required. Optional external scripts can read `attack_combat_busy` and `attack_inventory_busy` to defer background work, reserve targeting with `attack_external_target_busy`, and read the selected target through `attack_selected_target`. Missing timers do not block standalone operation.
 
 Lootmaster pauses during combat only if its own version implements these checks. The original Lootmaster does not automatically pause because the attack script is running.
 

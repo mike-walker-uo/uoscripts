@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.39 last edit 23.10.2026 ###
+### Version 1.40 last edit 27.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -11,7 +11,7 @@ import math
 import json, os
 import time
 from System.Collections.Generic import List
-from System import Byte
+from System import Byte, Int32
 
 # ── Save / Load settings ────────────────────────────────────────────────────
 try:
@@ -31,6 +31,7 @@ ignored_summon_names = set()
 
 SETTINGS_KEYS = [
     "attack_blues", "attack_red_humans", "attack_blue_changelings", "use_attack_lighthouses",
+    "use_move_closer_message", "use_auto_move_closer",
     "use_messages",
     "use_bagofsending", "use_move_artis", "lootbag_serial",
     "use_trappedcrate", "use_townbuff",
@@ -257,6 +258,8 @@ Misc.SetSharedValue("use_df_lowstam",0) # Opt in to Divine Fury below stamina th
 Misc.SetSharedValue("df_stam_threshold",180) # Absolute stamina threshold
 Misc.SetSharedValue("use_cw",0) # Use Chiv Consecrate Weapon
 Misc.SetSharedValue("use_holylight",0) # Use Chiv Holy Light with 2+ mobs within 3 tiles
+Misc.SetSharedValue("use_move_closer_message",1) # Warn after one second at 2-3 tiles
+Misc.SetSharedValue("use_auto_move_closer",0) # Opt in to melee approach at 2-3 tiles
 Misc.SetSharedValue("use_honor",1) # Use Honor.. can be used without Bushido
 Misc.SetSharedValue("use_ca",0) # Use Bushido Counter Attack
 Misc.SetSharedValue("use_removecurse",1) #If you want to remove curses with chiv
@@ -446,6 +449,7 @@ use_honor_fix = 0 #clear Honor if its still exiting without mobs around
 _flow = {
     'weapon': 'EQUIPPED', 'equipment': None, 'cursor': None, 'cursor_watch': None,
     'target': 0, 'target_hits': None, 'target_distance': None,
+    'move_closer': False,
     'spell_used': False, 'ability_used': False, 'cursor_used': False,
     'combat': False, 'melee': False, 'blood_oath_whirlwind': False,
     'special_slot': None, 'special_weapon': 0, 'last_attack': 0, 'lighthouses': [],
@@ -522,6 +526,8 @@ def refresh_sv():
     sv['use_messages']           = Misc.ReadSharedValue("use_messages")
     sv['use_df']                 = Misc.ReadSharedValue("use_df")
     sv['use_attack_lighthouses'] = Misc.ReadSharedValue("use_attack_lighthouses")
+    sv['use_move_closer_message'] = Misc.ReadSharedValue("use_move_closer_message")
+    sv['use_auto_move_closer'] = Misc.ReadSharedValue("use_auto_move_closer")
     sv['use_df_lowstam']         = Misc.ReadSharedValue("use_df_lowstam")
     sv['df_stam_threshold']      = Misc.ReadSharedValue("df_stam_threshold")
     sv['use_cw']                 = Misc.ReadSharedValue("use_cw")
@@ -2932,6 +2938,49 @@ def fighting(nearest, victims_6, victims_10, nearby_enemies, attackrange_enemy_c
 # faster re-engage when a new mob appears. Detection lags at most this long.
 _IDLE_PAUSE_EXTRA = 250
 
+def check_move_closer(victims_dist):
+    if (sv.get('use_move_closer_message') != 1 or sv['activeattack'] != 1 or
+            not victims_dist or _is_ranged_build or
+            not 1 < min(distance for mob, distance in victims_dist) <= 3):
+        _flow['move_closer'] = False
+        return
+    if not _flow['move_closer']:
+        _flow['move_closer'] = True
+        Timer.Create('move_closer', 1000)
+    elif not Timer.Check('move_closer'):
+        Player.HeadMessage(33, "move closer")
+        Timer.Create('move_closer', 3000)
+
+
+def auto_move_closer(nearest):
+    if (sv.get('use_auto_move_closer') != 1 or sv['activeattack'] != 1 or
+            _is_ranged_build or nearest is None or nearest.Deleted):
+        return
+    if (not 1 < Player.DistanceTo(nearest) <= 3 or
+            (nearest.HitsMax > 0 and nearest.Hits <= 0) or
+            not Player.Visible or Player.Paralized or
+            Player.BuffsExist('Bload Oath (curse)') or
+            Timer.Check('spells') or
+            Timer.Check('auto_move_closer')):
+        return
+    Timer.Create('auto_move_closer', 250)
+    position = Player.Position
+    target_position = nearest.Position
+    path = PathFinding.GetPath(target_position.X, target_position.Y, True)
+    if not path:
+        return
+    step = path[0]
+    if (step.X, step.Y) == (target_position.X, target_position.Y):
+        return
+    direction = {
+        (0, -1): "North", (1, -1): "NorthEast", (1, 0): "East",
+        (1, 1): "SouthEast", (0, 1): "South", (-1, 1): "SouthWest",
+        (-1, 0): "West", (-1, -1): "NorthWest",
+    }.get((step.X - position.X, step.Y - position.Y))
+    if direction:
+        Player.Run(direction)
+
+
 def publish_combat_activity(victims_dist):
     _flow['combat'] = bool(victims_dist) and sv['activeattack'] == 1
     _flow['melee'] = _flow['combat'] and any(d <= 1 for m, d in victims_dist)
@@ -2972,7 +3021,7 @@ def find_lighthouse():
         fil.OnGround = 1
         fil.Movable = 0
         fil.RangeMax = sv['attackrange']
-        fil.Graphics = List[int](LIGHTHOUSE_ITEM_IDS)
+        fil.Graphics = List[Int32](LIGHTHOUSE_ITEM_IDS)
         _flow['lighthouses'] = Items.ApplyFilter(fil)
         Timer.Create('lighthouse_scan', 200)
     candidates = [(item, Player.DistanceTo(item.Serial)) for item in _flow['lighthouses']
@@ -3039,13 +3088,6 @@ def select_combat_target(victims_dist, changeling_serials):
     locked = backstab_locked_target([m for m, d in candidates])
     if locked is not None:
         return locked
-    if Timer.Check('attack_controller_target'):
-        serial = Misc.ReadSharedValue("attack_controller_target")
-        preferred = next(((m, d) for m, d in candidates if m.Serial == serial), None)
-        if preferred:
-            mob, distance = preferred
-            _flow.update(target=mob.Serial, target_hits=mob.Hits, target_distance=distance)
-            return mob
     current = next(((m, d) for m, d in candidates if m.Serial == _flow['target']), None)
     changelings = [(m, d) for m, d in candidates if m.Serial in changeling_serials]
     pool = changelings or candidates
@@ -3142,6 +3184,7 @@ def run_tick():
     victims_dist = [(mob, Player.DistanceTo(mob)) for mob in victims]
     combat_dist = victims_dist if lighthouse is None else [(lighthouse, Player.DistanceTo(lighthouse.Serial))]
     publish_combat_activity(combat_dist)
+    check_move_closer(victims_dist)
 
     advance_equipment()
     if sv['activeattack'] == 1:
@@ -3230,6 +3273,7 @@ def run_tick():
         # Defense has first claim on casting; attacking continues in fighting().
         run_spell_priority((evasion, checkhits, divinefury_lowstam))
         fighting(nearest, victims_6, victims_10, nearby_enemies, len(victims))
+        auto_move_closer(nearest)
         if not victims_6:
             run_spell_priority((removepoison, removecurse, closewounds))
         if not _flow['melee']:

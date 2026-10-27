@@ -171,7 +171,7 @@ class SwingCoordinationTests(unittest.TestCase):
         self.world.tick(1500)
         self.assertFalse(self.ns['Timer'].Check('attack_combat_busy'))
 
-    def test_controller_follows_attack_target_and_attack_follows_movement_target(self):
+    def test_controller_can_follow_published_target_without_overriding_attack_selection(self):
         controller = self.controller()
         first, second = self.world.mob(2, 3), self.world.mob(3, 5)
         first.Position, second.Position = Obj(X=3, Y=0), Obj(X=5, Y=0)
@@ -180,7 +180,7 @@ class SwingCoordinationTests(unittest.TestCase):
         self.assertEqual(controller['combat_target_serial'], second.Serial)
         self.assertIn(('route', 5, 0), self.calls)
         chosen = self.ns['select_combat_target']([(first, 3), (second, 5)], set())
-        self.assertIs(chosen, second)
+        self.assertIs(chosen, first)
         controller['set_attack'](False)
         self.world.tick(1)
         self.assertFalse(self.ns['Timer'].Check('attack_controller_target'))

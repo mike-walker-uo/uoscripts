@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.39 last edit 23.10.2026 ###
+### Version 1.40 last edit 27.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -51,6 +51,7 @@ SLAYER_FILE = os.path.join(
 
 SETTINGS_KEYS = [
     "attack_blues", "attack_red_humans", "attack_blue_changelings", "use_attack_lighthouses",
+    "use_move_closer_message", "use_auto_move_closer",
     "use_messages",
     "use_bagofsending", "use_move_artis", "lootbag_serial",
     "use_trappedcrate", "use_townbuff",
@@ -278,6 +279,11 @@ def SetSharedValue(sharedvalue):
     Misc.SetSharedValue(sharedvalue, 0 if val == 1 else 1)
 
 def toggle_lighthouse_attacks(sharedvalue):
+    SetSharedValue(sharedvalue)
+    save_settings()
+
+
+def toggle_move_closer(sharedvalue):
     SetSharedValue(sharedvalue)
     save_settings()
 
@@ -897,6 +903,20 @@ sections = {
                 'sharedvalue':"use_attack_lighthouses",
                 'task':toggle_lighthouse_attacks,
                 'tooltip':"Attack Plunder Beacons and Blackthorn lighthouses within AttackRange when no hostile mobs are in range. Includes damaged graphics. Requires Attack On; saved per character.",
+                },
+                'Move Closer Msg':
+                {
+                'buttontype':"setsharedvalue",
+                'sharedvalue':"use_move_closer_message",
+                'task':toggle_move_closer,
+                'tooltip':"Melee only: show move closer after the nearest mob stays 2-3 tiles away for one second. Repeats every three seconds; saved per character.",
+                },
+                'Auto Move Closer':
+                {
+                'buttontype':"setsharedvalue",
+                'sharedvalue':"use_auto_move_closer",
+                'task':toggle_move_closer,
+                'tooltip':"Melee only: approach the selected mob from 2-3 tiles away, one pathfinding step at a time. Stops within one tile. Off by default; saved per character.",
                 },
         },
 

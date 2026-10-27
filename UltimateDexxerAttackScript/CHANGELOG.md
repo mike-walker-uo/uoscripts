@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.40 - 2026-10-27
+
+### Added
+
+- Saved `Move Closer Msg` toggle under `3: Attacks`, on by default. Melee characters see `move closer` after the nearest mob stays 2-3 tiles away for one second; reminders repeat every three seconds.
+- Saved, opt-in `Auto Move Closer` toggle under `3: Attacks`. Melee characters approach selected mobs from 2-3 tiles away, one pathfinding step at a time, stopping within one tile.
+
+### Changed
+
+- Target selection and automatic approach use the attack script's own combat state. Automatic approach pauses while hidden, paralyzed, casting or under Blood Oath.
+
+### Fixed
+
+- Lighthouse graphics filters use the explicit .NET `List[Int32]` type, fixing the Razor Enhanced collection type error.
+- Added coverage for movement timing, range limits, combat priority and per-character GUMP persistence.
+
 ## 1.39 - 2026-10-23
 
 ### Fixed

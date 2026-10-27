@@ -27,6 +27,7 @@ class LighthouseTests(unittest.TestCase):
         self.scans = []
         self.ns['sv']['use_attack_lighthouses'] = 1
         self.ns['List'] = GenericList
+        self.ns['Int32'] = int
         tree = ast.parse((ROOT / 'AttackScript_MikeWalker.py').read_text())
         self.ns['LIGHTHOUSE_ITEM_IDS'] = ast.literal_eval(next(n.value for n in tree.body
             if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
