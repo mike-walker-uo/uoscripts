@@ -1,6 +1,6 @@
 ### UO Ultimate Mage & Summoner Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.53 last edit 27.10.2026 ###
+### Version 0.54 last edit 28.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ###
 
@@ -960,6 +960,15 @@ sections = {
             'sharedvalue': "use_summonfiend",
             'task': SetSharedValue,
             'tooltip': "SW: Summon Fiend — summon imps to assist in combat. Re-summons when followers drop below threshold.",
+            },
+        'AnimatedWeapon':
+            {
+            'buttontype': "setsharedvalue",
+            'skillCheck': 'Mysticism',
+            'skillValue': 33,
+            'sharedvalue': "use_animated_weapon",
+            'task': SetSharedValue,
+            'tooltip': "Mysticism: Animated Weapon — summons when enough follower slots are free. Requires 33 Mysticism.",
             },
         'RisingColossus':
             {

@@ -109,10 +109,11 @@ Ground markers use client-only packets through Razor Enhanced's `PacketLogger`; 
 
 ## Summons
 
-Supported summons include Rising Colossus, Summon Creature, elemental summons, Summon Daemon, Blade Spirits, Energy Vortex, Summon Fey, Summon Fiend and Summon Reaper.
+Supported summons include Animated Weapon, Rising Colossus, Summon Creature, elemental summons, Summon Daemon, Blade Spirits, Energy Vortex, Summon Fey, Summon Fiend and Summon Reaper.
 
 - While safe, regular summons wait for Arcane Empowerment.
 - When hostile mobiles are nearby, summons bypass that wait so defense is not delayed.
+- Animated Weapon requires 33 Mysticism and four free follower slots, or two on UOAlive with at least 100 Magery, Mysticism and Spellweaving.
 - Rising Colossus requires three free follower slots on UOAlive.
 - Colossus placement cycles through nearby tiles when a location is blocked.
 - A failed required summon blocks offense for that cycle instead of attacking without the requested summon.

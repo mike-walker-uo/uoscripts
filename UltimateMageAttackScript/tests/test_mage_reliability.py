@@ -269,6 +269,24 @@ class MageReliabilityTests(unittest.TestCase):
         self.assertTrue(self.ns['manage_summons'](True))
         self.assertIn(('cast', 'Rising Colossus'), self.calls)
 
+    def test_animated_weapon_respects_slots_and_cast_confirmation(self):
+        self.configure_summons(free_slots=2)
+        self.ns['sv'].update(use_risingcolossus=0, use_animated_weapon=1)
+        skills = {'Magery': 100, 'Mysticism': 100, 'Spellweaving': 100}
+        self.ns['skill_value'] = lambda name: skills[name]
+        self.assertTrue(self.ns['summon_demand']())
+        skills['Spellweaving'] = 99
+        self.assertFalse(self.ns['summon_demand']())
+        self.ns['Player'].Followers = 1
+        self.assertTrue(self.ns['summon_demand']())
+        self.assertTrue(self.ns['manage_summons'](True))
+        self.assertIn(('cast', 'Animated Weapon'), self.calls)
+        self.clock.now = 1.0
+        self.assertTrue(self.ns['manage_summons'](True))
+        self.assertEqual(self.calls.count(('cast', 'Animated Weapon')), 1)
+        skills['Mysticism'] = 32
+        self.assertFalse(self.ns['summon_demand']())
+
     def test_colossus_journal_race_suppresses_duplicate_cast(self):
         self.configure_summons(free_slots=3)
         self.ns['journal_entries_since'] = lambda start: None

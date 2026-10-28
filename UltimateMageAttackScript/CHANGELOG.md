@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54 - 2026-10-28
+
+### Added
+
+- Optional Animated Weapon summon and GUMP button, with UOAlive follower-slot checks.
+
 ## 0.53 - 2026-10-27
 
 ### Fixed

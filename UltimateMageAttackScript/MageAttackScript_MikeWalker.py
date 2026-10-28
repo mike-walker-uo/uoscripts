@@ -1,6 +1,6 @@
 ### UO Ultimate Mage Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.53 last edit 27.10.2026 ###
+### Version 0.54 last edit 28.10.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to Python Script Section in Razor Enhanced ###
 ### START THE ATTACK SCRIPT FIRST — then start the GUMP script ###
@@ -169,6 +169,7 @@ Misc.SetSharedValue("use_spellplague", 0)     # Mysticism C7 — 40 mana
 # Summons — set to 1 to enable
 Misc.SetSharedValue("use_summonfey", 0)       # SW Summon Fey
 Misc.SetSharedValue("use_summonfiend", 0)     # SW Summon Fiend
+Misc.SetSharedValue("use_animated_weapon", 0) # Mysticism Animated Weapon
 Misc.SetSharedValue("use_risingcolossus", 1)  # Mysticism Rising Colossus (needs 80+ Myst)
 Misc.SetSharedValue("use_summonelemental", 0) # Magery Summon Elemental
 Misc.SetSharedValue("elemental_type", 0)      # 0=Air 1=Earth 2=Fire 3=Water
@@ -467,6 +468,7 @@ def refresh_sv():
     sv['use_spellplague']         = Misc.ReadSharedValue("use_spellplague")
     sv['use_summonfey']           = Misc.ReadSharedValue("use_summonfey")
     sv['use_summonfiend']         = Misc.ReadSharedValue("use_summonfiend")
+    sv['use_animated_weapon']     = Misc.ReadSharedValue("use_animated_weapon")
     sv['use_risingcolossus']      = Misc.ReadSharedValue("use_risingcolossus")
     sv['use_summonelemental']     = Misc.ReadSharedValue("use_summonelemental")
     sv['elemental_type']          = Misc.ReadSharedValue("elemental_type")
@@ -3845,6 +3847,13 @@ def status_overlay(nearest=None):
                 parts.append(dbg)
     Player.HeadMessage(88, " | ".join(parts))
 
+def animated_weapon_slots():
+    # UOAlive reduces the summon to two slots for this skill combination.
+    if (skill_value('Magery') >= 100 and skill_value('Mysticism') >= 100 and
+            skill_value('Spellweaving') >= 100):
+        return 2
+    return 4
+
 def summon_demand():
     """Return True only when an enabled, castable summon is missing."""
     followers = Player.Followers
@@ -3852,6 +3861,8 @@ def summon_demand():
     return (
         (sv['use_risingcolossus'] == 1 and
          skill_value('Mysticism') >= 80 and free_slots >= _COLOSSUS_SLOTS) or
+        (sv.get('use_animated_weapon', 0) == 1 and
+         skill_value('Mysticism') >= 33 and free_slots >= animated_weapon_slots()) or
         (sv['use_summonelemental'] == 1 and
          skill_value('Magery') >= 70 and followers < sv['elemental_threshold']) or
         (sv['use_summon_daemon'] == 1 and
@@ -3939,6 +3950,25 @@ def manage_summons(hostiles_nearby=False):
                 # Only an actual cast attempt reserves this loop. Low mana
                 # must leave room for affordable attacks or other summons.
                 return True
+
+    # Animated Weapon — Mysticism C4; target an adjacent tile.
+    if (sv.get('use_animated_weapon', 0) == 1 and skill_value('Mysticism') >= 33 and
+            Player.FollowersMax - Player.Followers >= animated_weapon_slots()):
+        if Timer.Check('animated_weapon_confirmation'):
+            return True
+        if Player.Mana >= mana_cost(11):
+            if sv['use_messages'] == 1:
+                Player.HeadMessage(80, "Animated Weapon!")
+            pre_cast = time.time()
+            Spells.CastMysticism("Animated Weapon")
+            target_ready = wait_for_spell_target(
+                pre_cast, 1250, 'relative', (Player.Serial, 1))
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(max(750, calc_castpause()))
+                Timer.Create('animated_weapon_confirmation', 2000)
+                Timer.Create('guardme_delay', 2000)
+                guardme_pending = True
+            return True
 
     # Summon Elemental — Magery C8 (2750ms)
     if sv['use_summonelemental'] == 1 and skill_value('Magery') >= 70:
@@ -4109,6 +4139,7 @@ if skill_value('Necromancy') < 99:
     Misc.SetSharedValue("use_vampiricembrace", 0)
 if skill_value('Mysticism') < 33:
     Misc.SetSharedValue("use_stoneform", 0)
+    Misc.SetSharedValue("use_animated_weapon", 0)
 if skill_value('Mysticism') < 50:
     Misc.SetSharedValue("use_mass_sleep", 0)
 if skill_value('Mysticism') < 51:
