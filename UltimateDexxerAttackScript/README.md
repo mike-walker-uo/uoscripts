@@ -8,7 +8,7 @@ Version history: [CHANGELOG.md](CHANGELOG.md)
 
 The GUMP groups controls into Main, Fight, Magic, Pots and Slayer tabs.
 
-![Gump Script options](attackscriptgump.png "Gump Script Options")
+![Gump Script options](attackscriptgump-1.42.png "Gump Script Options")
 
 ## Requirements
 

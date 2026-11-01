@@ -8,7 +8,7 @@ Version history: [CHANGELOG.md](CHANGELOG.md)
 
 The GUMP groups controls into Main, Heal, Spells, Summon, Skills and Slayer tabs.
 
-![Gump Script options](magescriptgump.png "Gump Script Options")
+![Gump Script options](magescriptgump-0.55.png "Gump Script Options")
 
 ## Requirements
 
