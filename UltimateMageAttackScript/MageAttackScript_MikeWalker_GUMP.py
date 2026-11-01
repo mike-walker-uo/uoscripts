@@ -1,6 +1,6 @@
 ### UO Ultimate Mage & Summoner Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.54 last edit 28.10.2026 ###
+### Version 0.55 last edit 01.11.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ###
 
@@ -72,6 +72,101 @@ def toggle_lighthouse_attacks(sharedvalue):
     save_settings()
 
 
+def prompt_target(message):
+    if Misc.ReadSharedValue("attack_cursor_owner") or Target.HasTarget() or Timer.Check("spells"):
+        Player.HeadMessage(30, "Targeting busy; try again")
+        return 0
+    Misc.SetSharedValue("attack_gump_targeting", 1)
+    try:
+        if Misc.ReadSharedValue("attack_cursor_owner") or Target.HasTarget() or Timer.Check("spells"):
+            Player.HeadMessage(30, "Targeting busy; try again")
+            return 0
+        return Target.PromptTarget(message)
+    finally:
+        Misc.SetSharedValue("attack_gump_targeting", 0)
+
+
+def item_is_in_backpack(item):
+    if not item or item.Deleted:
+        return False
+    backpack_serial = Player.Backpack.Serial
+    seen = set()
+    current = item
+    while current and current.Serial not in seen:
+        seen.add(current.Serial)
+        container = current.Container
+        try:
+            container_serial = container.Serial
+        except:
+            container_serial = container
+        if container_serial == backpack_serial:
+            return True
+        if not container_serial:
+            return False
+        current = Items.FindBySerial(container_serial)
+    return False
+
+
+def select_artifact_lootbag():
+    serial = prompt_target("Select the artifact loot bag")
+    if serial is None or serial <= 0:
+        Player.HeadMessage(30, "Loot bag selection canceled")
+        return 0
+    if serial == Player.Backpack.Serial:
+        Player.HeadMessage(30, "Select a bag inside the backpack, not the backpack")
+        return 0
+    lootbag = Items.FindBySerial(serial)
+    if not lootbag:
+        Player.HeadMessage(30, "Loot bag not found")
+        return 0
+    if not item_is_in_backpack(lootbag):
+        Player.HeadMessage(30, "Loot bag must be inside your backpack")
+        return 0
+    return serial
+
+
+def toggle_artifact_lootbag(sharedvalue):
+    if Misc.ReadSharedValue(sharedvalue) == 1:
+        Misc.SetSharedValue(sharedvalue, 0)
+    else:
+        serial = select_artifact_lootbag()
+        if not serial:
+            return
+        Misc.SetSharedValue("lootbag_serial", serial)
+        Misc.SetSharedValue(sharedvalue, 1)
+    mark_settings_changed()
+    save_settings()
+
+
+def set_mage_ignore(ignore):
+    serial = prompt_target("Select the mobile to %s" % ("ignore" if ignore else "unignore"))
+    mob = Mobiles.FindBySerial(serial) if serial and serial > 0 else None
+    if not mob or mob.Serial == Player.Serial:
+        Player.HeadMessage(30, "Select a mobile other than yourself")
+        return
+    try:
+        serials = set(int(value) for value in json.loads(
+            str(Misc.ReadSharedValue('mage_ignored_serials') or '[]')))
+    except (ValueError, TypeError):
+        serials = set()
+    if ignore:
+        serials.add(int(serial))
+    else:
+        serials.discard(int(serial))
+    Misc.SetSharedValue('mage_ignored_serials', json.dumps(sorted(serials)))
+    mark_settings_changed()
+    save_settings()
+    Player.HeadMessage(68, "%s: %s" % ('Ignored' if ignore else 'Unignored', mob.Name))
+
+
+def ignore_mage_target():
+    set_mage_ignore(True)
+
+
+def unignore_mage_target():
+    set_mage_ignore(False)
+
+
 def mySort(e):
     return e['name']
 
@@ -86,6 +181,8 @@ def get_all_sv_keys():
                 keys.add(action['sharedvalue'])
             if 'displayvalue' in action:
                 keys.add(action['displayvalue'])
+    keys.add("lootbag_serial")
+    keys.add("mage_ignored_serials")
     keys.discard("")  # RefreshGUMP dummy key
     for i in range(len(sections)):
         keys.add("gump_col_%d" % i)
@@ -364,6 +461,22 @@ sections = {
             'task': SetSharedValue,
             'tooltip': "Automatically send gold to bank with Bag of Sending when almost overweight.",
             },
+        'MoveArtifacts':
+            {
+            'buttontype': "setsharedvalue",
+            'sharedvalue': "use_move_artis",
+            'task': toggle_artifact_lootbag,
+            'tooltip': "Move named artifacts from your backpack to a selected bag while outside combat. Enabling asks you to select the bag.",
+            },
+        'DropHeirlooms':
+            {'buttontype': "setsharedvalue", 'sharedvalue': "use_drop_heirlooms",
+             'task': SetSharedValue, 'tooltip': "Drop Chests of Heirlooms outside combat."},
+        'IgnoreTarget':
+            {'buttontype': "action", 'task': ignore_mage_target,
+             'tooltip': "Select a specific mobile to ignore, saved per character."},
+        'UnignoreTarget':
+            {'buttontype': "action", 'task': unignore_mage_target,
+             'tooltip': "Select a previously ignored mobile to remove it from the list."},
         'TrappedCrate':
             {
             'buttontype': "setsharedvalue",
@@ -457,14 +570,46 @@ sections = {
             'skillValue': 0,
             'sharedvalue': "use_heal",
             'task': SetSharedValue,
-            'tooltip': "Auto-cast Greater Heal or Heal when HP drops below the heal threshold.",
+            'tooltip': "Heal at HealThreshold. With no Magery, uses Cleansing Winds if enabled and available.",
+            },
+        'SpiritSpeakHeal':
+            {
+            'buttontype': "setsharedvalue",
+            'skillCheck': 'Spirit Speak',
+            'skillValue': 0,
+            'sharedvalue': "use_spirit_speak_heal",
+            'task': SetSharedValue,
+            'tooltip': "Use Spirit Speak first at HealThreshold. If still injured, use Cleansing Winds when enabled, even with AutoHeal off. Retries every 5 seconds.",
             },
         'HealThreshold':
             {
             'buttontype': "setvalue",
             'displayvalue': "heal_threshold",
             'id': 4,
-            'tooltip': "HP percentage below which the script will cast a heal spell. (Default: 70)",
+            'tooltip': "HP percentage at or below which AutoHeal and SpiritSpeakHeal activate. (Default: 90)",
+            },
+        'EnchantedApple':
+            {
+            'buttontype': "setsharedvalue",
+            'sharedvalue': "use_enchanted_apple",
+            'task': SetSharedValue,
+            'tooltip': "Use an Enchanted Apple for Blood Oath. Cooldown starts after consumption is confirmed.",
+            },
+        'EmergencyHealPotion':
+            {'buttontype': "setsharedvalue", 'sharedvalue': "use_mage_heal_potion",
+             'task': SetSharedValue, 'tooltip': "Use a greater heal potion below the potion HP threshold."},
+        'HealPotionHP':
+            {'buttontype': "setvalue", 'displayvalue': "mage_heal_potion_pct",
+             'minValue': 1, 'maxValue': 100, 'tooltip': "Emergency heal potion HP percentage (default 20)."},
+        'CurePotion':
+            {'buttontype': "setsharedvalue", 'sharedvalue': "use_mage_cure_potion",
+             'task': SetSharedValue, 'tooltip': "Use a greater cure potion while poisoned."},
+        'OrangePetals':
+            {
+            'buttontype': "setsharedvalue",
+            'sharedvalue': "use_orange_petals",
+            'task': SetSharedValue,
+            'tooltip': "Maintain Orange Petals poison protection while enabled, including outside combat.",
             },
         'AutoCure':
             {
@@ -551,10 +696,10 @@ sections = {
             {
             'buttontype': "setsharedvalue",
             'skillCheck': 'Mysticism',
-            'skillValue': 51,
+            'skillValue': 58,
             'sharedvalue': "use_cleansingwinds",
             'task': SetSharedValue,
-            'tooltip': "Mysticism C6: Cleansing Winds — cures poison AND removes debuffs (Curse, Corpse Skin, etc). Prioritized over regular Cure. (req. 51 Mysticism)",
+            'tooltip': "Cleansing Winds heals, cures poison and removes debuffs. Requires 58 Mysticism; waits if a hostile is within 2 tiles.",
             },
         'ArcaneEmpowerment':
             {
@@ -648,7 +793,7 @@ sections = {
             'skillValue': 65,
             'sharedvalue': "use_strangle",
             'task': SetSharedValue,
-            'tooltip': "Necro: Strangle — damage over time. 15s cooldown. Strong vs high-HP mobs. (req. 65 Necro)",
+            'tooltip': "Necro: Strangle — damage over time. Tracks each mob separately and recasts near the estimated end. (req. 65 Necro)",
             },
         'MindRot':
             {
@@ -943,6 +1088,43 @@ sections = {
 
     '8: Summons':
     {
+        'RequireArcaneEmpowerment':
+            {
+            'buttontype': "setsharedvalue",
+            'sharedvalue': "summon_require_empowerment",
+            'task': SetSharedValue,
+            'tooltip': "When enabled, summons wait for Arcane Empowerment while no hostiles are nearby. Disable to summon without it. Summon Reaper is unaffected.",
+            },
+        'AnimateDead':
+            {
+            'buttontype': "setsharedvalue",
+            'skillCheck': 'Necromancy',
+            'skillValue': 40,
+            'sharedvalue': "use_animate_dead",
+            'task': SetSharedValue,
+            'tooltip': "Necromancy: animate a corpse within 10 tiles only when a hostile is within AttackRange. Requires 40 Necromancy.",
+            },
+        'MirrorImage':
+            {
+            'buttontype': "setsharedvalue",
+            'skillCheck': 'Ninjitsu',
+            'skillValue': 20,
+            'sharedvalue': "use_mirror_image",
+            'task': SetSharedValue,
+            'tooltip': "Ninjitsu: cast Mirror Image when a hostile is within AttackRange and a follower slot is free. Requires 20 Ninjitsu and no mount.",
+            },
+        'ReleaseMirrorImage':
+            {'buttontype': "setsharedvalue", 'sharedvalue': "use_mage_release_mirror",
+             'task': SetSharedValue, 'tooltip': "Release a Mirror Image at four followers while a hostile is nearby."},
+        'NaturesFury':
+            {
+            'buttontype': "setsharedvalue",
+            'skillCheck': 'Spellweaving',
+            'skillValue': 0,
+            'sharedvalue': "use_natures_fury",
+            'task': SetSharedValue,
+            'tooltip': "Spellweaving: summon Nature's Fury only when a hostile is within AttackRange and a follower slot is free.",
+            },
         'SummonFey':
             {
             'buttontype': "setsharedvalue",
@@ -1310,6 +1492,9 @@ sections = {
 
     'B: Tamer':
     {
+        'PetSync':
+            {'buttontype': "setsharedvalue", 'sharedvalue': "use_mage_pet_sync",
+             'task': SetSharedValue, 'tooltip': "Command followers to attack your current target."},
         'AutoCurePet':
             {
             'buttontype': "setsharedvalue",
@@ -1411,7 +1596,7 @@ sections = {
             'minValue': 30,
             'maxValue': 95,
             'step': 5,
-            'tooltip': "HP%% below which protective keep_* buffs get priority. Default 60.",
+            'tooltip': "HP%% below which defensive buffs may be refreshed. Buffs wait while healing or cure is needed. Default 60.",
             },
         'StatusOverlay':
             {
@@ -1540,6 +1725,9 @@ def buildSection(gd, title, sy, actions, sectionhue, titleX=0, values=None, skil
         elif a.get('buttontype') == 'slayerbook':
             a['hue'] = 32 if a['equipped'] else (53 if a['is_slayer'] else 88)
 
+        if action in ('LoadSettings', 'SaveSettings'):
+            a['hue'] = 55
+
         if 'skillCheck' not in a:
             validActions.append(a)
             continue
@@ -1625,12 +1813,22 @@ def buildSection(gd, title, sy, actions, sectionhue, titleX=0, values=None, skil
 
 def sendgump():
     refresh_slayer_section()
-    sectionssorted = sorted(sections)
+    tab_sections = {
+        'main': ('0: Presets', '1: Status & Ranges', '2: Global'),
+        'heal': ('3: Heal Cure & Buff',),
+        'spells': ('4: Mob Debuffs', '5: Single Target', '6: Multi Target', '7: Mass Target'),
+        'summons': ('8: Summons', 'B: Tamer'),
+        'skills': ('9: Skill Masteries', 'A: Bard', 'C: Advanced'),
+        'slayer': ('2: Slayer Books',),
+    }
+    active_tab = str(Misc.ReadSharedValue('mage_gump_tab') or 'main')
+    sectionssorted = [name for name in sorted(sections)
+                      if name in tab_sections.get(active_tab, tab_sections['main'])]
     values = {k: Misc.ReadSharedValue(k) for k in get_all_sv_keys()}
     skills = {}
 
     # First pass (dry run): calculate exact height based on visible entries
-    sY_calc = 30
+    sY_calc = 52
     for section in sectionssorted:
         sY_calc = buildSection(None, section, sY_calc, sections[section], 20, 5, values, skills)
     gump_height = sY_calc + 10
@@ -1642,8 +1840,15 @@ def sendgump():
     Gumps.AddAlphaRegion(gd, 0, 0, 380, gump_height)
     Gumps.AddLabel(gd, 2, 3, 68, " UO Mage Attack Script by Mike|Walker")
     Gumps.AddImageTiled(gd, 2, 25, 368, 2, 30547)
+    tabs = (('Main', 'main'), ('Heal', 'heal'), ('Spells', 'spells'),
+            ('Summon', 'summons'), ('Skills', 'skills'), ('Slayer', 'slayer'))
+    for index, (label, name) in enumerate(tabs):
+        x = 3 + index * 62
+        Gumps.AddButton(gd, x, 28, 9762, 9763, 900001 + index, 1, 0)
+        Gumps.AddLabel(gd, x + 15, 28, 68 if active_tab == name else 900, label)
+    Gumps.AddImageTiled(gd, 2, 48, 368, 2, 30547)
 
-    sY = 30
+    sY = 52
     for section in sectionssorted:
         sY = buildSection(gd, section, sY, sections[section], 20, 5, values, skills)
 
@@ -1659,6 +1864,10 @@ def buttoncheck(gumpId):
 
     # buttonid 0 = gump closed (right-click) — no action pressed
     if gd.buttonid <= 0:
+        return
+    if 900001 <= gd.buttonid <= 900006:
+        tabs = ('main', 'heal', 'spells', 'summons', 'skills', 'slayer')
+        Misc.SetSharedValue('mage_gump_tab', tabs[gd.buttonid - 900001])
         return
 
     raw_section = int(gd.buttonid / 1000)

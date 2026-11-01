@@ -6,6 +6,8 @@ An all-in-one Razor Enhanced combat script for melee, Sampire, Ninja, Archer, Th
 
 Version history: [CHANGELOG.md](CHANGELOG.md)
 
+The GUMP groups controls into Main, Fight, Magic, Pots and Slayer tabs.
+
 ![Gump Script options](attackscriptgump.png "Gump Script Options")
 
 ## Requirements

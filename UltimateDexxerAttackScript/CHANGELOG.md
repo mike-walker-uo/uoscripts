@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.42 - 2026-11-01
+
+### Changed
+
+- Split the GUMP into Main, Fight, Magic, Pots and Slayer tabs; highlighted SaveSettings.
+- Updated the GUMP screenshot.
+
 ## 1.41 - 2026-10-27
 
 ### Changed

@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script GUMP by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.41 last edit 27.10.2026 ###
+### Version 1.42 last edit 01.11.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 
@@ -1127,7 +1127,7 @@ def buildSection(gd, title, sy, actions, sectionhue, titleX=0):
 
             elif btype == 'savesettings':
                 Gumps.AddButton(gd, 5, actionY, 9762, 9763, action['actionId'], 1, 0)
-                Gumps.AddLabel(gd, 25, actionY, 68, action['_key'])
+                Gumps.AddLabel(gd, 25, actionY, 55, action['_key'])
                 if 'tooltip' in action:
                     Gumps.AddTooltip(gd, str(action['tooltip']))
 
@@ -1177,17 +1177,25 @@ def add_gump_shell(gd, height, active_tab):
     Gumps.AddLabel(gd, 2, 3, 68, " UO Ultimate Attack Script by Mike|Walker")
     Gumps.AddImageTiled(gd, 2, 22, 288, 2, 30547)
 
-    settings_hue = 68 if active_tab == 'settings' else 900
-    slayer_hue = 68 if active_tab == 'slayer' else 900
-    Gumps.AddButton(gd, 5, 27, 9762, 9763, TAB_SETTINGS, 1, 0)
-    Gumps.AddLabel(gd, 25, 27, settings_hue, "Settings")
-    Gumps.AddButton(gd, 115, 27, 9762, 9763, TAB_SLAYER, 1, 0)
-    Gumps.AddLabel(gd, 135, 27, slayer_hue, "Slayer Sets")
+    tabs = ((900001, 'Main', 'settings'), (900003, 'Fight', 'fight'),
+            (900004, 'Magic', 'magic'), (900005, 'Pots', 'pots'),
+            (900002, 'Slayer', 'slayer'))
+    for index, (button_id, label, name) in enumerate(tabs):
+        x = 5 + index * 59
+        Gumps.AddButton(gd, x, 27, 9762, 9763, button_id, 1, 0)
+        Gumps.AddLabel(gd, x + 15, 27, 68 if active_tab == name else 900, label)
     Gumps.AddImageTiled(gd, 2, 47, 288, 2, 30547)
 
 
 def build_settings_gump():
-    sectionssorted = sorted(sections)
+    tab_sections = {
+        'settings': ('1: Status & Ranges', '2: Global'),
+        'fight': ('3: Attacks',),
+        'magic': ('4: Spells',),
+        'pots': ('5: Potions & Convenience',),
+    }
+    sectionssorted = [name for name in sorted(sections)
+                      if name in tab_sections.get(_active_tab, tab_sections['settings'])]
     gump_height = 52
     for section in sectionssorted:
         gump_height += calc_section_height(section, sections[section])
@@ -1195,7 +1203,7 @@ def build_settings_gump():
 
     gd = Gumps.CreateGump(movable=True)
     Gumps.AddPage(gd, 0)
-    add_gump_shell(gd, gump_height, 'settings')
+    add_gump_shell(gd, gump_height, _active_tab)
 
     section_y = 52
     for section in sectionssorted:
@@ -1338,6 +1346,9 @@ def buttoncheck(gumpId):
         return
     elif bid == TAB_SLAYER:
         _active_tab = 'slayer'
+        return
+    elif bid in (900003, 900004, 900005):
+        _active_tab = {900003: 'fight', 900004: 'magic', 900005: 'pots'}[bid]
         return
 
     if _active_tab == 'slayer':

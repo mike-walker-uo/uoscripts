@@ -1,6 +1,6 @@
 ### UO Ultimate Dexxer Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateDexxerAttackScript
-### Version 1.41 last edit 27.10.2026 ###
+### Version 1.42 last edit 01.11.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 with fixed Skill Names ###
 ### SAVE THE SCRIPT AS .py file and add to the Python Script Section in Razor Enhanced ####
 

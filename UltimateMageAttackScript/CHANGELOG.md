@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.55 - 2026-11-01
+
+### Added
+
+- Tabbed GUMP with highlighted LoadSettings and SaveSettings; updated screenshot.
+- Optional Spirit Speak healing, enchanted apples, orange petals, heal and cure potions.
+- Nature's Fury, Mirror Image and Animate Dead summon options, plus Mirror Image release.
+- Optional artifact sorting, heirloom chest drops, pet target sync and per-character mob ignore controls.
+
+### Changed
+
+- Prioritize healing and curing over routine buffs and summons. Cleansing Winds waits until no hostile is within two tiles; Magery healing and curing require Magery.
+- Optional Arcane Empowerment requirement for summons; summon guard commands for Fey, Fiend and Colossus.
+- Honor chooses an eligible full-health mob; Strangle uses per-target estimated durations.
+
+### Fixed
+
+- Reactive Armor retries when its buff does not appear; Protection's casting penalty is applied after the FC cap.
+- Added regression coverage for the new controls and combat behavior.
+
 ## 0.54 - 2026-10-28
 
 ### Added

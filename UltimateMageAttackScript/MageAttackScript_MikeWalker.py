@@ -1,6 +1,6 @@
 ### UO Ultimate Mage Attack Script by Mike|Walker ##########
 ### https://github.com/mike-walker-uo/uoscripts/tree/main/UltimateMageAttackScript
-### Version 0.54 last edit 28.10.2026 ###
+### Version 0.55 last edit 01.11.2026 ###
 ### Try to run at least Razor Enhanced Version 0.8.2.215 ###
 ### SAVE THE SCRIPT AS .py file and add to Python Script Section in Razor Enhanced ###
 ### START THE ATTACK SCRIPT FIRST — then start the GUMP script ###
@@ -72,6 +72,16 @@ Misc.SetSharedValue("use_messages", 1)
 Misc.SetSharedValue("use_mobinfo", 0)
 # Bag of Sending: sends gold to bank when almost overweight
 Misc.SetSharedValue("use_bagofsending", 1)
+# Move named artifacts into a selected backpack bag (opt-in).
+Misc.SetSharedValue("use_move_artis", 0)
+Misc.SetSharedValue("lootbag_serial", 0)
+Misc.SetSharedValue("mage_ignored_serials", "[]")
+Misc.SetSharedValue("use_drop_heirlooms", 0)
+Misc.SetSharedValue("use_mage_heal_potion", 0)
+Misc.SetSharedValue("use_mage_cure_potion", 0)
+Misc.SetSharedValue("mage_heal_potion_pct", 20)
+Misc.SetSharedValue("use_mage_pet_sync", 0)
+Misc.SetSharedValue("use_mage_release_mirror", 0)
 # Trapped Crate to escape paralyze
 Misc.SetSharedValue("use_trappedcrate", 1)
 # Check for Town Buff (City Trade Deal)
@@ -101,8 +111,11 @@ Misc.SetSharedValue("honordistance", 10)
 
 ##################################################################
 # Heal, Cure & Buff — set to 1 to enable
+Misc.SetSharedValue("use_spirit_speak_heal", 0) # optional Spirit Speak healing
 Misc.SetSharedValue("use_heal", 1)            # auto Greater Heal / Heal
 Misc.SetSharedValue("heal_threshold", 90)     # cast heal when HP% below this value
+Misc.SetSharedValue("use_enchanted_apple", 0) # use enchanted apples for Blood Oath
+Misc.SetSharedValue("use_orange_petals", 0)    # maintain poison protection
 Misc.SetSharedValue("use_cure", 1)            # auto Cure when poisoned
 Misc.SetSharedValue("use_magicreflect", 1)    # keep Magic Reflect active
 Misc.SetSharedValue("use_reactivearmor", 1)   # keep Reactive Armor active
@@ -167,6 +180,10 @@ Misc.SetSharedValue("use_spellplague", 0)     # Mysticism C7 — 40 mana
 
 ##################################################################
 # Summons — set to 1 to enable
+Misc.SetSharedValue("summon_require_empowerment", 1) # require Arcane Empowerment when safe
+Misc.SetSharedValue("use_animate_dead", 0)   # Necromancy Animate Dead
+Misc.SetSharedValue("use_mirror_image", 0)   # Ninjitsu Mirror Image
+Misc.SetSharedValue("use_natures_fury", 0)   # SW Nature's Fury
 Misc.SetSharedValue("use_summonfey", 0)       # SW Summon Fey
 Misc.SetSharedValue("use_summonfiend", 0)     # SW Summon Fiend
 Misc.SetSharedValue("use_animated_weapon", 0) # Mysticism Animated Weapon
@@ -264,11 +281,56 @@ _COLOSSUS_SLOTS = 3  # UOAlive shard rule
 Misc.SetSharedValue("activeattack", 1)
 Misc.SetSharedValue("use_honor", 0)
 Misc.SetSharedValue("use_bandages", 0)
-guardme_fey   = 0
-guardme_fiend = 0
 last_debuff_target = 0
+miscartis = [
+    "Flute of Renewal", "blighted cotton", "gnaw's fang", "thorny briar",
+    "sabrix's eye", "lissith's silk", "irk's brain", "Raptor Claw",
+    "Tome of Enlightenment", "Void Infused Kilt", "Axe of Abandon",
+    "Ancient Farmer's Kasa", "Totem of the Void", "Bloodwood Spirit",
+    "Soul Seeker", "Fey Leggings", "Boomstick", "Talon Bite",
+    "Robe of the Equinox", "Blade Dance", "Flesh Ripper", "Aegis of Grace",
+    "Righteous Anger", "Bonesmasher", "Raed's Glory", "Brightsight Lenses",
+    "Wildfire Bow", "Quiver of the Elements", "Quiver of Rage",
+    "Helm of Swiftness", "Robe of the Eclipse", "Windsong",
+    "Gauntlets of Villainous Epiphany", "Breastplate of Virtuous Epiphany",
+    "Legs of Virtuous Epiphany", "Helm of Villainous Epiphany",
+    "Arms of Villainous Epiphany", "Kilt of Virtuous Epiphany",
+    "Tattered Remnants of an Ancient Scroll", "Helm of Virtuous Epiphany",
+    "Gorget of Villainous Epiphany", "Earrings of Villainous Epiphany",
+    "Gorget of Virtuous Epiphany", "Demon Bridle Ring",
+    "Sword of Shattered Hopes", "Blade of Battle", "Giant Steps",
+    "Demon Forks", "Peasant's Bokuto", "Pigments of Tokuno", "Exiler",
+    "Pilfered Dancer Fans", "Gloves of the Pugilist", "Ancient Samurai Do",
+    "Dragon Nunchaku", "Staff of Power", "Honorable Swords of Nami",
+    "Honorable Swords of Ryo", "Arms of Tactical Excellence", "Hanzo's Bow",
+    "Gloves of the Sun", "Legs of Stability", "Daimyo's Helm",
+    "Black Lotus Hood", "Leurocian's Mempo of Fortune", "The Destroyer",
+    "Brightblade", "Blight of the Tundra", "Storm Caller", "Pixie Swatter",
+    "Blaze of Death", "Cavorting Club", "Enchanted Titan Leg Bone",
+    "Bow of the Juka King", "Burglar's Bandana", "Night's Kiss",
+    "Phillip's Wooden Steed", "Nox Ranger's Heavy Crossbow", "Iolo's Lute",
+    "Wrath of the Dryad", "Alchemist's Bauble", "Orcish Visage",
+    "Polar Bear Mask",
+]
+
+destardartis = [
+    "Katrina's Crook", "Heart of the Lion", "a map of the known world",
+    "Sollerets of Sacrifice (Virtue Armor Set)", "Sentinel's Guard",
+    "Legs of Honor (Virtue Armor Set)", "Jaana's Staff",
+    "Helm of Spirituality (Virtue Armor Set)", "Violet Courage",
+    "Lord Blackthorn's Exemplar", "Arms of Compassion (Virtue Armor Set)",
+    "Gauntlets of Valor (Virtue Armor Set)", "Shield of Invulnerability",
+    "Dragon's End", "Breastplate of Justice (Virtue Armor Set)",
+    "Arctic Death Dealer", "Luna Lance", "Ankh Pendant", "Gold Bricks",
+    "Gwenno's Harp", "Gorget of Honesty (Virtue Armor Set)",
+]
+
+ARTIFACT_NAMES = set(name.lower() for name in miscartis + destardartis)
+
 LIGHTHOUSE_ITEM_IDS = (0x4724, 0x9983, 0x9984)
 _lighthouse_cache = []
+_animate_dead_corpses = []
+_animate_dead_seen = {}
 last_attack_target = 0
 last_distance_marker = None
 last_player_hits = Player.Hits
@@ -290,6 +352,21 @@ busy_failure_count = 0
 busy_failure_since = None
 last_cast_recovery = 0.0
 rare_pet_alert_active = False
+_pending_mage_apple = None
+_artifact_name_cache = {}
+_artifact_scan_queue = []
+_artifact_move_queue = []
+_heirloom_candidate_queue = []
+_heirloom_drop_queue = []
+_heirloom_drop_state = None
+_mirror_release_candidates = []
+_pending_mage_potion = None
+_last_mage_pet_target = 0
+HEIRLOOM_CHEST_ID = 0x2811
+HEIRLOOM_CHEST_HUE = 0
+HEIRLOOM_CHEST_NAME = "chest of heirlooms"
+HEIRLOOM_DROP_OFFSETS = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1),
+                         (1, 1), (-1, -1), (1, -1), (-1, 1))
 serverdelay = 150  # adjust for lag (ms)
 _mage_inventory_until = 0.0
 _mage_combat = False
@@ -417,6 +494,16 @@ def refresh_sv():
     sv['use_messages']            = Misc.ReadSharedValue("use_messages")
     sv['use_mobinfo']             = Misc.ReadSharedValue("use_mobinfo")
     sv['use_bagofsending']        = Misc.ReadSharedValue("use_bagofsending")
+    sv['use_move_artis']          = Misc.ReadSharedValue("use_move_artis")
+    sv['lootbag_serial']          = Misc.ReadSharedValue("lootbag_serial")
+    for key in ('use_drop_heirlooms', 'use_mage_heal_potion', 'use_mage_cure_potion',
+                'mage_heal_potion_pct', 'use_mage_pet_sync', 'use_mage_release_mirror'):
+        sv[key] = Misc.ReadSharedValue(key)
+    try:
+        sv['mage_ignored_serials'] = set(int(v) for v in json.loads(
+            str(Misc.ReadSharedValue('mage_ignored_serials') or '[]')))
+    except (ValueError, TypeError):
+        sv['mage_ignored_serials'] = set()
     sv['use_trappedcrate']        = Misc.ReadSharedValue("use_trappedcrate")
     sv['use_townbuff']            = Misc.ReadSharedValue("use_townbuff")
     sv['use_checkforlegendaries'] = Misc.ReadSharedValue("use_checkforlegendaries")
@@ -431,6 +518,9 @@ def refresh_sv():
     sv['use_attack_lighthouses'] = Misc.ReadSharedValue("use_attack_lighthouses")
     sv['use_arcanefocus']         = Misc.ReadSharedValue("use_arcanefocus")
     sv['use_bandages']            = Misc.ReadSharedValue("use_bandages")
+    sv['use_spirit_speak_heal']   = Misc.ReadSharedValue("use_spirit_speak_heal")
+    sv['use_enchanted_apple']     = Misc.ReadSharedValue("use_enchanted_apple")
+    sv['use_orange_petals']       = Misc.ReadSharedValue("use_orange_petals")
     sv['use_heal']                = Misc.ReadSharedValue("use_heal")
     sv['heal_threshold']          = Misc.ReadSharedValue("heal_threshold")
     sv['use_cure']                = Misc.ReadSharedValue("use_cure")
@@ -466,6 +556,10 @@ def refresh_sv():
     sv['use_earthquake']          = Misc.ReadSharedValue("use_earthquake")
     sv['use_wildfire']            = Misc.ReadSharedValue("use_wildfire")
     sv['use_spellplague']         = Misc.ReadSharedValue("use_spellplague")
+    sv['summon_require_empowerment'] = Misc.ReadSharedValue("summon_require_empowerment")
+    sv['use_animate_dead']        = Misc.ReadSharedValue("use_animate_dead")
+    sv['use_mirror_image']        = Misc.ReadSharedValue("use_mirror_image")
+    sv['use_natures_fury']        = Misc.ReadSharedValue("use_natures_fury")
     sv['use_summonfey']           = Misc.ReadSharedValue("use_summonfey")
     sv['use_summonfiend']         = Misc.ReadSharedValue("use_summonfiend")
     sv['use_animated_weapon']     = Misc.ReadSharedValue("use_animated_weapon")
@@ -1159,6 +1253,30 @@ DEBUFF_BADGES = {
     'debuff_mana_vampire':'MV',
 }
 
+def strangle_duration_ms():
+    """Estimate effect duration from the server's Spirit Speak tick schedule."""
+    ticks = max(4, int(skill_value('Spirit Speak') / 10))
+    remaining = ticks
+    delay = 5
+    duration = delay
+    while remaining > 1:
+        remaining -= 1
+        if delay > 1:
+            if ticks < 5:
+                delay -= 1
+            else:
+                delay = min(5, (1 + 5 * remaining + ticks - 1) // ticks)
+        duration += delay
+    # Start recasting shortly before the estimated final tick.
+    return max(1000, (duration - 2) * 1000)
+
+def track_strangle(serial):
+    now = time.time()
+    for target_key, expiry in list(debuff_expiry.items()):
+        if expiry <= now:
+            debuff_expiry.pop(target_key, None)
+    debuff_expiry[(serial, 'debuff_strangle')] = now + strangle_duration_ms() / 1000.0
+
 def debuff_ready(key):
     return debuff_expiry.get((last_debuff_target, key), 0) <= time.time()
 
@@ -1189,6 +1307,15 @@ def is_under_attack():
     if Player.HitsMax <= 0:
         return False
     return Player.Hits < Player.HitsMax * thr
+
+def self_care_needed():
+    """Defer nonessential buffs and summons while healing or cure is needed."""
+    if Player.Poisoned:
+        return True
+    if Player.HitsMax <= 0:
+        return True
+    threshold = max(50, sv.get('heal_threshold', 90)) / 100.0
+    return Player.Hits < Player.HitsMax and Player.Hits <= Player.HitsMax * threshold
 
 def low_mana():
     """True when low-mana mode is enabled and mana is below low_mana_threshold %.
@@ -1295,7 +1422,7 @@ def mobs_list(rng):
             exclude = True
         elif mob.MobileID in mobileIDsToIgnore:
             exclude = True
-        elif mob.Serial in serialsToIgnore:
+        elif mob.Serial in sv.get('mage_ignored_serials', set()) or mob.Serial in serialsToIgnore:
             exclude = True
 
         if not exclude:
@@ -1317,6 +1444,37 @@ def mobs_list(rng):
             mobsTemp.append(mob)
 
     return mobsTemp
+
+def valid_animate_corpse(corpse):
+    return (sv.get('use_animate_dead', 0) == 1 and corpse is not None and
+            not corpse.Deleted and corpse.Visible and corpse.OnGround and
+            corpse.IsCorpse and corpse.ItemID == 0x2006 and
+            0 <= Player.DistanceTo(corpse.Serial) <= 10)
+
+def find_animate_corpse():
+    """Find an untried nearby corpse; server decides whether it is animatable."""
+    global _animate_dead_corpses
+    if sv.get('use_animate_dead', 0) != 1:
+        return None
+    now = time.time()
+    for serial, expiry in list(_animate_dead_seen.items()):
+        if expiry <= now:
+            _animate_dead_seen.pop(serial, None)
+    if not Timer.Check('mage_animate_dead_scan'):
+        fil = Items.Filter()
+        fil.OnGround = 1
+        fil.IsCorpse = 1
+        fil.RangeMax = 10
+        _animate_dead_corpses = [item.Serial for item in Items.ApplyFilter(fil)]
+        Timer.Create('mage_animate_dead_scan', 1000)
+    candidates = []
+    for serial in _animate_dead_corpses:
+        corpse = Items.FindBySerial(serial)
+        if serial not in _animate_dead_seen and valid_animate_corpse(corpse):
+            candidates.append(corpse)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: Player.DistanceTo(item.Serial))
 
 def valid_lighthouse(item):
     if (sv.get('use_attack_lighthouses') != 1 or sv['activeattack'] != 1 or
@@ -1373,7 +1531,8 @@ def changelings_list():
     fil.IgnorePets = True
     fil.Friend = False
     mobs = Mobiles.ApplyFilter(fil)
-    return [mob for mob in mobs if mob.Name == Player.Name]
+    return [mob for mob in mobs if mob.Name == Player.Name and
+            mob.Serial not in sv.get('mage_ignored_serials', set())]
 
 def remember_offensive_target(target):
     """Remember exact positions so a server LOS rejection can be quarantined."""
@@ -1468,7 +1627,7 @@ def calc_castspeed(spellcasttime):
     fcmin = 250
     fc = min(2, _cached_fc)
     if Player.BuffsExist('Protection'):
-        fc = _cached_fc - 2
+        fc -= 2
     castspeed = spellcasttime - (fc * 250) + serverdelay + fcmin
     if castspeed < (serverdelay + fcmin):
         castspeed = serverdelay + fcmin
@@ -1479,7 +1638,7 @@ def calc_castspeed_sw(spellcasttime):
     fcmin = 250
     fc = min(4, _cached_fc)
     if Player.BuffsExist('Protection'):
-        fc = _cached_fc - 2
+        fc -= 2
     castspeed = spellcasttime - (fc * 250) + serverdelay + fcmin
     if castspeed < (serverdelay + fcmin):
         castspeed = serverdelay + fcmin
@@ -1778,16 +1937,45 @@ def _pending_target_data(pre_cast, spellcasttime, kind, target=None,
 
 def execute_pending_target():
     """Consume only the cursor registered by this script's current cast."""
-    global pending_target_cursor
+    global pending_target_cursor, _last_mage_pet_target
     data = pending_target_cursor
     if external_target_reserved() or data is None or not Target.HasTarget():
         return False
     kind = data['kind']
     target = data.get('target')
     consumed = False
-    if kind == 'hostile':
+    if kind in ('hostile', 'strangle'):
         preferred = Mobiles.FindBySerial(target)
-        consumed = target_current_visible_hostile(preferred) is not None
+        actual = target_current_visible_hostile(preferred)
+        consumed = actual is not None
+        if consumed and kind == 'strangle':
+            track_strangle(actual.Serial)
+    elif kind == 'pet_sync':
+        mob = Mobiles.FindBySerial(target)
+        valid = (sv.get('use_mage_pet_sync', 0) == 1 and sv.get('activeattack', 0) == 1 and
+                 mob is not None and not mob.Deleted and
+                 mob.Serial not in sv.get('mage_ignored_serials', set()) and
+                 mob.HitsMax > 0 and mob.Hits > 0 and
+                 Player.DistanceTo(mob) <= sv['attackrange'] and
+                 not Player.BuffsExist('Bload Oath (curse)'))
+        if valid:
+            consumed = execute_target_confirmed(mob.Serial)
+            if consumed:
+                _last_mage_pet_target = mob.Serial
+        else:
+            Target.Cancel()
+            pending_target_cursor = None
+    elif kind == 'animate_dead':
+        corpse = Items.FindBySerial(target)
+        if valid_animate_corpse(corpse):
+            consumed = execute_target_confirmed(corpse.Serial)
+            if consumed:
+                # The server may reject some corpses; don't repeatedly target them.
+                _animate_dead_seen[corpse.Serial] = time.time() + 90.0
+        else:
+            Target.Cancel()
+            pending_target_cursor = None
+            set_spell_timer(250)
     elif kind == 'lighthouse':
         item = Items.FindBySerial(target)
         if valid_lighthouse(item):
@@ -2224,6 +2412,308 @@ def check_bandages():
             Player.HeadMessage(30, "Warning: %s bandages left" % amt)
         Timer.Create("bandagecheck", 4000)
 
+def item_is_in_backpack(item):
+    if not item or item.Deleted:
+        return False
+    backpack_serial = Player.Backpack.Serial
+    seen = set()
+    current = item
+    while current and current.Serial not in seen:
+        seen.add(current.Serial)
+        container = current.Container
+        try:
+            container_serial = container.Serial
+        except:
+            container_serial = container
+        if container_serial == backpack_serial:
+            return True
+        if not container_serial:
+            return False
+        current = Items.FindBySerial(container_serial)
+    return False
+
+
+def item_container_serial(item):
+    if not item:
+        return 0
+    container = item.Container
+    try:
+        return container.Serial
+    except:
+        return container
+
+
+def backpack_items_except(container, excluded_serial, seen=None):
+    if seen is None:
+        seen = set()
+    if not container or container.Serial in seen:
+        return []
+    seen.add(container.Serial)
+    try:
+        contents = list(container.Contains)
+    except:
+        return []
+
+    found = []
+    for item in contents:
+        if item is None or item.Deleted or item.Serial == excluded_serial:
+            continue
+        found.append(item)
+        found.extend(backpack_items_except(item, excluded_serial, seen))
+    return found
+
+
+def cached_item_name(item, cache):
+    cached = cache.get(item.Serial)
+    if cached is not None:
+        return cached
+
+    name = item.Name
+    if not name:
+        key = 'item_props_%X' % item.Serial
+        if not Timer.Check(key):
+            Items.WaitForProps(item.Serial, 0)
+            Timer.Create(key, 1000)
+        refreshed = Items.FindBySerial(item.Serial)
+        name = refreshed.Name if refreshed else None
+    if not name:
+        return None
+
+    normalized = str(name).strip().lower()
+    cache[item.Serial] = normalized
+    return normalized
+
+
+def move_artifacts_to_lootbag():
+    if sv.get('use_move_artis', 0) != 1:
+        del _artifact_scan_queue[:]
+        del _artifact_move_queue[:]
+        return
+
+    scan_due = Timer.Check("artifactmove") == False
+    if not scan_due and not _artifact_scan_queue and not _artifact_move_queue:
+        return
+
+    lootbag = Items.FindBySerial(sv['lootbag_serial'])
+    if lootbag and not item_is_in_backpack(lootbag):
+        lootbag = None
+    if not lootbag:
+        del _artifact_move_queue[:]
+        if Timer.Check("lootbagprompt") != False:
+            return
+        Timer.Create("lootbagprompt", 10000)
+        Player.HeadMessage(30, "Loot bag missing: select it in the GUMP")
+        return
+
+    # Do not restart a scan while its item queue is still being processed.
+    # Otherwise a large backpack can reset the queue every ten seconds and
+    # starve artifacts near the end of the scan indefinitely.
+    if (scan_due and not _artifact_scan_queue and
+            not _artifact_move_queue):
+        Timer.Create("artifactmove", 10000)
+        items = backpack_items_except(Player.Backpack, lootbag.Serial)
+        live_serials = {item.Serial for item in items}
+        for serial in list(_artifact_name_cache):
+            if serial not in live_serials:
+                del _artifact_name_cache[serial]
+        _artifact_scan_queue[:] = [item.Serial for item in items]
+
+    # Property discovery can block up to 500ms: do at most one per tick.
+    if _artifact_scan_queue:
+        serial = _artifact_scan_queue.pop(0)
+        item = Items.FindBySerial(serial)
+        if (item and not item.Deleted and item_is_in_backpack(item) and
+                item_container_serial(item) != lootbag.Serial and
+                cached_item_name(item, _artifact_name_cache) in ARTIFACT_NAMES):
+            _artifact_move_queue.append(serial)
+
+    if Timer.Check('artifact_move_action') != False:
+        return
+    while _artifact_move_queue:
+        serial = _artifact_move_queue.pop(0)
+        item = Items.FindBySerial(serial)
+        if (serial == lootbag.Serial or not item_is_in_backpack(item)
+                or item_container_serial(item) == lootbag.Serial):
+            continue
+        Items.Move(item, lootbag.Serial, -1)
+        Timer.Create('artifact_move_action', 600)
+        if sv['use_messages'] == 1:
+            Player.HeadMessage(68, "Move artifact: %s" % _artifact_name_cache.get(serial, 'artifact'))
+        return True
+
+
+def drop_heirloom_chests():
+    global _heirloom_drop_state
+    if sv.get('use_drop_heirlooms', 0) != 1:
+        del _heirloom_candidate_queue[:]
+        del _heirloom_drop_queue[:]
+        _heirloom_drop_state = None
+        return False
+
+    if Timer.Check("heirloomdrop") == False:
+        Timer.Create("heirloomdrop", 10000)
+        items = backpack_items_except(Player.Backpack, 0)
+        _heirloom_candidate_queue[:] = [
+            item.Serial for item in items
+            if item.ItemID == HEIRLOOM_CHEST_ID and item.Hue == HEIRLOOM_CHEST_HUE
+        ]
+
+    # Resolve at most one candidate name per tick. A same-ID decoy must not
+    # prevent a later real Chest of Heirlooms from being considered.
+    if _heirloom_candidate_queue:
+        serial = _heirloom_candidate_queue.pop(0)
+        item = Items.FindBySerial(serial)
+        if (item and not item.Deleted and item_is_in_backpack(item) and
+                cached_item_name(item, _artifact_name_cache) == HEIRLOOM_CHEST_NAME):
+            _heirloom_drop_queue.append(serial)
+
+    if Timer.Check('heirloom_drop_action') != False:
+        return
+
+    if _heirloom_drop_state is not None:
+        serial, offset_index = _heirloom_drop_state
+        moved = Items.FindBySerial(serial)
+        if moved is None or moved.Deleted or not item_container_serial(moved):
+            if sv['use_messages'] == 1:
+                Player.HeadMessage(68, "Dropped Chest of Heirlooms")
+            _heirloom_drop_state = None
+        elif offset_index >= len(HEIRLOOM_DROP_OFFSETS):
+            Player.HeadMessage(30, "Could not drop Chest of Heirlooms")
+            _heirloom_drop_state = None
+        elif not item_is_in_backpack(moved):
+            _heirloom_drop_state = None
+
+    if _heirloom_drop_state is None:
+        while _heirloom_drop_queue:
+            serial = _heirloom_drop_queue.pop(0)
+            item = Items.FindBySerial(serial)
+            if item and not item.Deleted and item_is_in_backpack(item):
+                _heirloom_drop_state = (serial, 0)
+                break
+        if _heirloom_drop_state is None:
+            return
+
+    serial, offset_index = _heirloom_drop_state
+    item = Items.FindBySerial(serial)
+    if (not item or item.Deleted or not item_is_in_backpack(item) or
+            item.ItemID != HEIRLOOM_CHEST_ID or item.Hue != HEIRLOOM_CHEST_HUE or
+            cached_item_name(item, _artifact_name_cache) != HEIRLOOM_CHEST_NAME):
+        _heirloom_drop_state = None
+        return
+    dx, dy = HEIRLOOM_DROP_OFFSETS[offset_index]
+    Items.MoveOnGround(item, 0, Player.Position.X + dx,
+                       Player.Position.Y + dy, Player.Position.Z)
+    _heirloom_drop_state = (serial, offset_index + 1)
+    Timer.Create('heirloom_drop_action', 600)
+    return True
+
+
+def release_one_mirror_image(has_nearby_mobs):
+    if sv.get('use_mage_release_mirror', 0) != 1:
+        return
+    # Releasing without a nearby mob causes the player to take bleed damage.
+    if not has_nearby_mobs:
+        return
+    if Player.Followers != 4 or Timer.Check('mirror_release') != False:
+        return
+
+    if not _mirror_release_candidates:
+        fil = Mobiles.Filter()
+        fil.Enabled = True
+        # Images can follow outside a melee character's short AttackRange.
+        fil.RangeMax = max(12, sv['attackrange'])
+        fil.CheckIgnoreObject = False
+        fil.IgnorePets = False
+        _mirror_release_candidates[:] = [mob.Serial for mob in Mobiles.ApplyFilter(fil)
+                                         if mob is not None]
+
+    if _mirror_release_candidates:
+        serial = _mirror_release_candidates.pop(0)
+        mob = Mobiles.FindBySerial(serial)
+        if (mob is None or mob.Deleted or mob.Serial == Player.Serial or
+                mob.Name != Player.Name or mob.MobileID != Player.MobileID):
+            return
+        if Timer.Check('mirror_context_request'):
+            _mirror_release_candidates.insert(0, serial)
+            return
+        contexts = Misc.WaitForContext(mob.Serial, 0) or []
+        Timer.Create('mirror_context_request', 250)
+        if not contexts:
+            _mirror_release_candidates.append(serial)
+        for context in contexts:
+            if str(context.Entry).strip().lower() == "release":
+                # Revalidate conditions after waiting for context.
+                if has_nearby_mobs and Player.Followers == 4:
+                    Misc.ContextReply(mob.Serial, context.Response)
+                    Timer.Create('mirror_release', 3000)
+                    del _mirror_release_candidates[:]
+                    if sv['use_messages'] == 1:
+                        Player.HeadMessage(68, "Released one Mirror Image")
+                return
+        return
+
+def manage_mage_potions():
+    """Confirm consumption before starting the shared potion cooldown."""
+    global _pending_mage_potion
+    if _pending_mage_potion is not None:
+        serial, amount = _pending_mage_potion
+        item = Items.FindBySerial(serial)
+        if (item is None or item.Deleted or item.Amount < amount):
+            Timer.Create('mage_potion_cooldown', 10500)
+            _pending_mage_potion = None
+        elif not Timer.Check('mage_potion_confirm'):
+            _pending_mage_potion = None
+    if (_pending_mage_potion is not None or Timer.Check('mage_potion_cooldown') or
+            Timer.Check('mage_potion_retry') or Timer.Check('spells') or Target.HasTarget()):
+        return False
+    potion_ids = []
+    if (sv.get('use_mage_heal_potion', 0) == 1 and Player.HitsMax > 0 and
+            Player.Hits < Player.HitsMax * sv.get('mage_heal_potion_pct', 20) / 100.0):
+        potion_ids.append(0x0F0C)
+    if sv.get('use_mage_cure_potion', 0) == 1 and Player.Poisoned:
+        potion_ids.append(0x0F07)
+    if not potion_ids:
+        return False
+    potion = None
+    for potion_id in potion_ids:
+        potion = Items.FindByID(potion_id, -1, Player.Backpack.Serial, -1, True)
+        if potion:
+            break
+    if not potion:
+        Timer.Create('mage_potion_retry', 1000)
+        return False
+    _pending_mage_potion = (potion.Serial, potion.Amount)
+    Timer.Create('mage_potion_confirm', 1000)
+    Timer.Create('mage_potion_retry', 3000)
+    Items.UseItem(potion)
+    return True
+
+
+def honor_candidate(victims_dist):
+    eligible = [(mob, dist) for mob, dist in victims_dist
+                if 0 <= dist <= min(sv['honordistance'], 12) and
+                mob.HitsMax > 0 and mob.Hits == mob.HitsMax]
+    return min(eligible, key=lambda pair: pair[1])[0] if eligible else None
+
+
+def sync_mage_pets(target):
+    global pending_target_cursor, _last_mage_pet_target
+    if sv.get('use_mage_pet_sync', 0) != 1:
+        return False
+    if not Player.Followers:
+        _last_mage_pet_target = 0
+        return False
+    if (target is None or target.Serial == _last_mage_pet_target or
+            Timer.Check('mage_pet_sync') or Target.HasTarget() or
+            external_target_reserved() or Player.BuffsExist('Bload Oath (curse)')):
+        return False
+    Timer.Create('mage_pet_sync', 2000)
+    pending_target_cursor = {'kind': 'pet_sync', 'target': target.Serial,
+                             'deadline': time.time() + 0.75, 'started': time.time()}
+    Player.ChatSay('all kill')
+    return True
+
+
 def checkweight():
     if sv['use_bagofsending'] == 1:
         bag = Items.FindByName("a bag of sending", -1, Player.Backpack.Serial, 0, False)
@@ -2251,36 +2741,111 @@ def checkweight():
 ##################################################################
 # Heal / Cure / Buff
 
+def manage_enchanted_apple():
+    """Use an apple for Blood Oath and confirm consumption before cooldown."""
+    global _pending_mage_apple
+    if _pending_mage_apple is not None:
+        serial, amount = _pending_mage_apple
+        remaining = Items.FindBySerial(serial)
+        consumed = ((remaining is None or remaining.Deleted) and amount == 1)
+        if remaining is not None and not remaining.Deleted:
+            consumed = remaining.Amount < amount
+        if consumed:
+            Timer.Create('mage_apple_cooldown', 60000)
+            _pending_mage_apple = None
+        elif not Timer.Check('mage_apple_confirm'):
+            _pending_mage_apple = None
+    if (sv.get('use_enchanted_apple', 0) != 1 or
+            not Player.BuffsExist('Bload Oath (curse)') or
+            _pending_mage_apple is not None or Timer.Check('mage_apple_cooldown') or
+            Timer.Check('mage_apple_retry')):
+        return False
+    Timer.Create('mage_apple_retry', 3000)
+    apple = Items.FindByID(0x2FD8, -1, Player.Backpack.Serial, True, False)
+    if not apple or apple.Amount <= 0:
+        return False
+    if sv.get('use_messages', 1) == 1:
+        Player.HeadMessage(80, "Enchanted Apple!")
+    _pending_mage_apple = (apple.Serial, apple.Amount)
+    Timer.Create('mage_apple_confirm', 1000)
+    Items.UseItem(apple)
+    return True
+
+def manage_orange_petals():
+    """Maintain petal protection; retry failed or missing items without blocking."""
+    if (sv.get('use_orange_petals', 0) != 1 or
+            Player.BuffsExist('Orange Petals') or Timer.Check('mage_petals_retry') or
+            Timer.Check('spells') or Target.HasTarget()):
+        return False
+    Timer.Create('mage_petals_retry', 3000)
+    petals = Items.FindByID(0x1021, 0x002B, Player.Backpack.Serial, True, False)
+    if not petals or petals.Amount <= 0:
+        return False
+    if sv.get('use_messages', 1) == 1:
+        Player.HeadMessage(80, "Orange Petals!")
+    Items.UseItem(petals)
+    return True
+
+def hostile_within_two():
+    """Check close hostiles without line-of-sight or combat-target caching."""
+    fil = Mobiles.Filter()
+    fil.Enabled = True
+    fil.RangeMax = 2
+    fil.Notorieties = List[Byte](bytes([1, 3, 4, 5, 6]) if sv.get('attack_blues', 0) == 1
+                                  else bytes([3, 4, 5, 6]))
+    fil.IsGhost = False
+    fil.CheckIgnoreObject = False
+    fil.IgnorePets = True
+    fil.Friend = False
+    if Mobiles.ApplyFilter(fil):
+        return True
+    return sv.get('attack_blue_changelings', 0) == 1 and bool(changelings_list())
+
 def auto_heal():
-    """Heal/Greater Heal based on HP threshold. """
-    if sv['use_heal'] == 0 or Player.Paralized or Player.Poisoned:
+    """Heal based on the configured HP threshold."""
+    if Player.Paralized or Player.Poisoned:
         return False
     if Timer.Check('spells') == True:
         return False
     threshold = sv['heal_threshold'] / 100.0
-    if Player.Hits > Player.HitsMax * threshold:
+    if Player.HitsMax <= 0 or Player.Hits >= Player.HitsMax or Player.Hits > Player.HitsMax * threshold:
         return False
-    # At critical HP, prefer Cleansing Winds only when this character can cast
-    # it; otherwise fall back to an independently eligible Magery heal.
-    if Player.Hits <= Player.HitsMax * 0.5:
+    if Timer.Check('spirit_speak_pending'):
+        return True
+    if (sv.get('use_spirit_speak_heal', 0) == 1 and
+            not Timer.Check('spirit_speak_heal') and not Target.HasTarget()):
+        if sv['use_messages'] == 1:
+            Player.HeadMessage(68, "Spirit Speak!")
+        Player.UseSkill('Spirit Speak')
+        Timer.Create('spirit_speak_pending', 1200)
+        Timer.Create('spirit_speak_heal', 5000)
+        return True
+    if (sv['use_heal'] == 0 and
+            not (sv.get('use_spirit_speak_heal', 0) == 1 and
+                 sv.get('use_cleansingwinds', 0) == 1)):
+        return False
+    # Prefer Cleansing Winds after Spirit Speak, without Magery, or at critical HP.
+    magery = skill_value('Magery')
+    if (sv.get('use_spirit_speak_heal', 0) == 1 or
+            Player.Hits <= Player.HitsMax * 0.5 or magery < 0.1):
         if (sv['use_cleansingwinds'] == 1 and
                 Player.Mana >= mana_cost(20) and
-                skill_value('Mysticism') >= 58):
+                skill_value('Mysticism') >= 58 and not hostile_within_two()):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Cleansing Winds!")
             pre_cast = time.time()
             Spells.CastMysticism("Cleansing Winds")
             target_ready = wait_for_spell_target(
                 pre_cast, 2250, 'self', Player.Serial)
-        elif (Player.Mana >= mana_cost(11) and
-              skill_value('Magery') >= 24.1):
+        elif (sv['use_heal'] == 1 and Player.Mana >= mana_cost(11) and
+              magery >= 24.1):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Greater Heal!")
             pre_cast = time.time()
             Spells.CastMagery("Greater Heal")
             target_ready = wait_for_spell_target(
                 pre_cast, 1750, 'self', Player.Serial)
-        elif Player.Mana >= mana_cost(4):
+        elif sv['use_heal'] == 1 and magery >= 0.1 and Player.Mana >= mana_cost(4):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Heal!")
             pre_cast = time.time()
@@ -2292,7 +2857,7 @@ def auto_heal():
         if target_ready and not did_fizzle(pre_cast):
             set_spell_timer(calc_castpause())
         return True
-    elif Player.Mana >= mana_cost(4):
+    elif sv['use_heal'] == 1 and magery >= 0.1 and Player.Mana >= mana_cost(4):
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Heal!")
         pre_cast = time.time()
@@ -2339,7 +2904,7 @@ def auto_cure():
 
     # Cleansing Winds is the final fallback and also removes many debuffs.
     if (sv['use_cleansingwinds'] == 1 and Player.Mana >= mana_cost(20) and
-            skill_value('Mysticism') >= 58):
+            skill_value('Mysticism') >= 58 and not hostile_within_two()):
         if sv['use_messages'] == 1:
             Player.HeadMessage(68, "Cleansing Winds (cure)!")
         pre_cast = time.time()
@@ -2355,7 +2920,7 @@ def cleansing_winds():
     """Cast Cleansing Winds when player is cursed or has harmful debuffs."""
     if sv['use_cleansingwinds'] == 0 or Timer.Check('spells') == True or Player.Paralized:
         return False
-    if Player.Mana < mana_cost(20) or skill_value('Mysticism') < 58:
+    if Player.Mana < mana_cost(20) or skill_value('Mysticism') < 58 or hostile_within_two():
         return False
     cursed = (Player.BuffsExist("Curse") or Player.BuffsExist("Evil Omen") or
               Player.BuffsExist("Corpse Skin") or Player.BuffsExist("Strangle") or
@@ -2387,13 +2952,13 @@ def keep_magic_reflect():
 def keep_reactive_armor():
     if sv['use_reactivearmor'] == 0 or Timer.Check('spells') == True or Player.Paralized:
         return
-    if not Player.BuffsExist("Reactive Armor") and (Timer.Check("reactivearmor") == False or is_under_attack()):
+    if not Player.BuffsExist("Reactive Armor") and Timer.Check("reactivearmor") == False:
         if Player.Mana >= mana_cost(4):
             if sv['use_messages'] == 1:
                 Player.HeadMessage(68, "Reactive Armor!")
             Spells.CastMagery("Reactive Armor")
             set_spell_timer(calc_castspeed(1000) + calc_castpause())
-            create_rollback_cooldown("reactivearmor", 120000)
+            create_rollback_cooldown("reactivearmor", calc_castspeed(1000) + 3000)
 
 def keep_protection():
     if sv['use_protection'] == 0 or Timer.Check('spells') == True or Player.Paralized:
@@ -2711,10 +3276,9 @@ def apply_debuffs(nearest, nearby_count=1):
             pre_cast = time.time()
             Spells.CastNecro("Strangle")
             target_ready = wait_for_spell_target(
-                pre_cast, 2500, 'hostile', nearest)
+                pre_cast, 2500, 'strangle', nearest)
             if target_ready and not did_fizzle(pre_cast):
                 set_spell_timer(calc_castpause())
-                track_debuff('debuff_strangle', 15000)
             return True
 
     # Mind Rot: increases mana costs — very effective vs mage and caster mobs (Necro req. 30)
@@ -3030,7 +3594,7 @@ def heal_pets():
         if option == 3:
             if (Timer.Check('spells') == False and
                     Player.Mana >= mana_cost(20) and
-                    skill_value('Mysticism') >= 58):
+                    skill_value('Mysticism') >= 58 and not hostile_within_two()):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(68, "Cleansing Winds: %s!" % pet.Name)
                 pre_cast = time.time()
@@ -3082,7 +3646,7 @@ def cure_pets():
         if option == 3:
             if (Timer.Check('spells') == False and
                     Player.Mana >= mana_cost(20) and
-                    skill_value('Mysticism') >= 58):
+                    skill_value('Mysticism') >= 58 and not hostile_within_two()):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(68, "Cleansing Winds (cure): %s!" % pet.Name)
                 pre_cast = time.time()
@@ -3807,11 +4371,12 @@ def say_guardme_if_pending():
     """Say 'all guard me' once after any summon cast completes.
     Called every tick from the main loop — manage_summons is gated by the spell
     timer and would miss the window after a successful summon."""
-    global guardme_pending
+    global guardme_pending, _last_mage_pet_target
     if (guardme_pending and not Player.Paralized and
             Timer.Check('spells') == False and
             Timer.Check('guardme_delay') == False):
         Player.ChatSay("all guard me")
+        _last_mage_pet_target = 0
         if sv.get('use_summon_counter', 1) == 1:
             Player.HeadMessage(88, "Followers: %d/%d" % (Player.Followers, Player.FollowersMax))
         guardme_pending = False
@@ -3854,7 +4419,7 @@ def animated_weapon_slots():
         return 2
     return 4
 
-def summon_demand():
+def summon_demand(hostiles_nearby=False):
     """Return True only when an enabled, castable summon is missing."""
     followers = Player.Followers
     free_slots = Player.FollowersMax - followers
@@ -3863,6 +4428,14 @@ def summon_demand():
          skill_value('Mysticism') >= 80 and free_slots >= _COLOSSUS_SLOTS) or
         (sv.get('use_animated_weapon', 0) == 1 and
          skill_value('Mysticism') >= 33 and free_slots >= animated_weapon_slots()) or
+        (hostiles_nearby and sv.get('use_animate_dead', 0) == 1 and skill_value('Necromancy') >= 40 and
+         Player.Mana >= mana_cost(23) and not Timer.Check('mage_animate_dead_retry') and
+         find_animate_corpse() is not None) or
+        (hostiles_nearby and sv.get('use_mirror_image', 0) == 1 and free_slots >= 1 and
+         not Player.Mount and skill_value('Ninjitsu') >= 20 and
+         Player.Mana >= mana_cost(10) and not Timer.Check('mage_mirror_image_retry')) or
+        (hostiles_nearby and sv.get('use_natures_fury', 0) == 1 and free_slots >= 1 and
+         skill_value('Spellweaving') >= 0 and not Timer.Check('mage_natures_fury_retry')) or
         (sv['use_summonelemental'] == 1 and
          skill_value('Magery') >= 70 and followers < sv['elemental_threshold']) or
         (sv['use_summon_daemon'] == 1 and
@@ -3881,24 +4454,25 @@ def summon_demand():
 def manage_summons(hostiles_nearby=False):
     """Maintain summons, preferring Arcane Empowerment while it is safe.
 
-    Out of combat, wait for Arcane Empowerment before summoning. Nearby
-    hostiles bypass the buff requirement so follower recovery is not delayed.
+    When configured, wait for Arcane Empowerment in safety. Nearby hostiles
+    bypass the requirement so follower recovery is not delayed.
     """
-    global guardme_fey, guardme_fiend, guardme_pending
+    global guardme_pending
     if Timer.Check('spells') == True or Player.Paralized:
         return False
 
-    if not summon_demand():
+    if not summon_demand(hostiles_nearby):
         return False
 
-    if not hostiles_nearby and not has_arcane_empowerment():
+    if (sv.get('summon_require_empowerment', 1) == 1 and
+            not hostiles_nearby and not has_arcane_empowerment()):
         if arcane_empowerment():
             return True
         if Timer.Check('summon_empowerment_notice') == False:
             if sv.get('use_messages', 1) == 1:
                 Player.HeadMessage(33, "Summon waiting for Arcane Empowerment")
             Timer.Create('summon_empowerment_notice', 5000)
-        # Safe-area summons never proceed unempowered.
+        # Wait until the required buff becomes active.
         return True
 
     # Rising Colossus — Mysticism C8 (2750ms, req. ~80); cycles tiles if placement is blocked
@@ -3969,6 +4543,52 @@ def manage_summons(hostiles_nearby=False):
                 Timer.Create('guardme_delay', 2000)
                 guardme_pending = True
             return True
+
+    # Animate Dead — target one nearby corpse; don't repeatedly retry a rejected corpse.
+    if (hostiles_nearby and sv.get('use_animate_dead', 0) == 1 and skill_value('Necromancy') >= 40 and
+            Player.Mana >= mana_cost(23) and not Timer.Check('mage_animate_dead_retry')):
+        corpse = find_animate_corpse()
+        if corpse is not None:
+            if sv['use_messages'] == 1:
+                Player.HeadMessage(80, "Animate Dead!")
+            pre_cast = time.time()
+            Timer.Create('mage_animate_dead_retry', 10000)
+            Spells.CastNecro("Animate Dead")
+            target_ready = wait_for_spell_target(
+                pre_cast, 1750, 'animate_dead', corpse.Serial)
+            if target_ready and not did_fizzle(pre_cast):
+                set_spell_timer(calc_castpause())
+            return True
+
+    # Mirror Image — Ninjitsu, one follower slot, while hostiles are nearby.
+    if (hostiles_nearby and sv.get('use_mirror_image', 0) == 1 and
+            Player.Followers < Player.FollowersMax and not Player.Mount and
+            skill_value('Ninjitsu') >= 20 and Player.Mana >= mana_cost(10) and
+            not Timer.Check('mage_mirror_image_retry')):
+        if sv['use_messages'] == 1:
+            Player.HeadMessage(80, "Mirror Image!")
+        Timer.Create('mage_mirror_image_retry', 5000)
+        Spells.CastNinjitsu("Mirror Image")
+        set_spell_timer(calc_castspeed(1500) + calc_castpause())
+        return True
+
+    # Nature's Fury — Spellweaving, one follower slot, targeted near the player.
+    if (hostiles_nearby and sv.get('use_natures_fury', 0) == 1 and
+            Player.FollowersMax - Player.Followers >= 1 and
+            skill_value('Spellweaving') >= 0 and
+            not Timer.Check('mage_natures_fury_retry') and Player.Mana >= mana_cost(24)):
+        if sv['use_messages'] == 1:
+            Player.HeadMessage(80, "Nature's Fury!")
+        pre_cast = time.time()
+        Timer.Create('mage_natures_fury_retry', 3000)
+        Spells.CastSpellweaving("Natures Fury")
+        target_ready = wait_for_spell_target(
+            pre_cast, 1500, 'relative', (Player.Serial, 1), True)
+        if target_ready and not did_fizzle(pre_cast):
+            set_spell_timer(max(750, calc_castpause()))
+            Timer.Create('guardme_delay', 2000)
+            guardme_pending = True
+        return True
 
     # Summon Elemental — Magery C8 (2750ms)
     if sv['use_summonelemental'] == 1 and skill_value('Magery') >= 70:
@@ -4055,12 +4675,11 @@ def manage_summons(hostiles_nearby=False):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(80, "Summon Fey")
                 Spells.CastSpellweaving("Summon Fey")
-                guardme_fey = 1
-                set_spell_timer(calc_castspeed_sw(1500) + calc_castpause())
+                fey_cast_ms = calc_castspeed_sw(1500) + calc_castpause()
+                set_spell_timer(fey_cast_ms)
+                Timer.Create('guardme_delay', fey_cast_ms + 2000)
+                guardme_pending = True
                 return True
-        elif guardme_fey == 1:
-            Player.ChatSay("all guard me")
-            guardme_fey = 0
 
     # Summon Fiend — SW
     if sv['use_summonfiend'] == 1:
@@ -4069,12 +4688,11 @@ def manage_summons(hostiles_nearby=False):
                 if sv['use_messages'] == 1:
                     Player.HeadMessage(80, "Summon Fiend")
                 Spells.CastSpellweaving("Summon Fiend")
-                guardme_fiend = 1
-                set_spell_timer(calc_castspeed_sw(2000) + calc_castpause())
+                fiend_cast_ms = calc_castspeed_sw(2000) + calc_castpause()
+                set_spell_timer(fiend_cast_ms)
+                Timer.Create('guardme_delay', fiend_cast_ms + 2000)
+                guardme_pending = True
                 return True
-        elif guardme_fiend == 1:
-            Player.ChatSay("all guard me")
-            guardme_fiend = 0
 
     return False
 
@@ -4202,7 +4820,7 @@ if skill_value('Healing') > 30 or skill_value('Veterinary') > 30:
 
 refresh_gear_cache()
 
-Player.HeadMessage(90, "Start Ultimate Mage Attack Script v0.51 by Mike|Walker")
+Player.HeadMessage(90, "Start Ultimate Mage Attack Script v0.55 by Mike|Walker")
 Player.HeadMessage(40, "Dont forget to start the GUMP script")
 
 ##################################################################
@@ -4259,11 +4877,13 @@ while not Player.IsGhost:
             Player.SetWarMode(False)
 
     # --- Healing: highest priority (take care of yourself first) ---
-    care_attempted = auto_heal()
+    care_attempted = manage_mage_potions() or manage_enchanted_apple() or auto_heal()
     if not care_attempted:
         care_attempted = auto_cure()
     if not care_attempted:
         care_attempted = cleansing_winds()
+    if not care_attempted:
+        care_attempted = manage_orange_petals()
     if not care_attempted:
         manage_bandage_agent()
         heal_pets()
@@ -4317,11 +4937,23 @@ while not Player.IsGhost:
         visible_changelings = changelings_list()
     lighthouse = find_lighthouse() if not (all_victims or visible_changelings) else None
     publish_mage_combat(all_victims or visible_changelings or lighthouse)
+    if (not all_victims and not visible_changelings and not lighthouse and
+            not Target.HasTarget() and not self_care_needed() and
+            not Timer.Check('mage_item_move')):
+        if drop_heirloom_chests() or move_artifacts_to_lootbag():
+            Timer.Create('mage_item_move', 600)
+            pause_mage_loop(100)
+            continue
     nether_blast_pending = Timer.Check('netherblast_pending')
 
-    # --- Summons: require Arcane Empowerment while safe; bypass it in danger ---
+    if (not self_care_needed() and not Target.HasTarget() and
+            not Timer.Check('spells')):
+        release_one_mirror_image(bool(all_victims or visible_changelings))
+
+    # --- Summons: optional Arcane Empowerment requirement while safe ---
     summon_attempted = False
-    if not nether_blast_pending and Timer.Check('spells') == False:
+    if (not nether_blast_pending and Timer.Check('spells') == False and
+            not self_care_needed()):
         # Nearby hostiles remain a danger even through a wall, so summons may
         # still bypass Arcane Empowerment. Offensive targeting is LOS-filtered below.
         summon_attempted = manage_summons(len(all_victims) > 0 or len(visible_changelings) > 0)
@@ -4353,10 +4985,9 @@ while not Player.IsGhost:
             prebuff_nearest = min(prebuff_dist, key=lambda mob_dist: mob_dist[1])[0]
             nether_blast_due = nether_blast_ready_for(prebuff_nearest, prebuff_nearby_count)
 
-        # Routine buffs wait until combat ends. Low HP still permits the
-        # configured defensive buffs; healing and curing run above this branch.
+        # Never prioritize defensive buffs while healing or cure is needed.
         if (not nether_blast_pending and not nether_blast_due and
-                is_under_attack()):
+                not self_care_needed() and is_under_attack()):
             Timer.Create('buffcheck', 750)
             keep_magic_reflect()
             keep_reactive_armor()
@@ -4420,30 +5051,36 @@ while not Player.IsGhost:
             last_distance_marker = None
 
         if (not nether_blast_pending and not nether_blast_ready and
-                Timer.Check('spells') == False):
+                Timer.Check('spells') == False and not self_care_needed()):
             if manage_reaper(nearest):
                 pause_mage_loop(100)
                 continue
 
-        # Honor
+        # Honor the closest eligible full-health hostile, even if the attack
+        # target is damaged. Never retarget Honor to a different mobile.
+        honor_target = honor_candidate(victims_dist) if sv['use_honor'] == 1 else None
         if (not nether_blast_pending and not nether_blast_ready and
-                Timer.Check('spells') == False and
-                not Target.HasTarget() and sv['use_honor'] == 1 and
-                nearest.Hits == nearest.HitsMax and
-                Player.DistanceTo(nearest) <= sv['honordistance']):
-            if not Player.BuffsExist('Honored') or use_honor_fix == 1:
-                if Timer.Check('spamhonor') == False and sv['use_messages'] == 1:
-                    Player.HeadMessage(55, "Honor: {}".format(nearest.Name))
-                    Timer.Create('spamhonor', 1500)
-                Player.InvokeVirtue("Honor")
-                if wait_for_target_responsive(1500, True):
-                    target_current_visible_hostile(nearest)
-                    use_honor_fix = 0
+                Timer.Check('spells') == False and not Target.HasTarget() and
+                honor_target is not None and
+                (not Player.BuffsExist('Honored') or use_honor_fix == 1)):
+            Player.InvokeVirtue("Honor")
+            if wait_for_target_responsive(1500, True):
+                current = Mobiles.FindBySerial(honor_target.Serial)
+                if (current is not None and current.HitsMax > 0 and
+                        current.Hits == current.HitsMax and
+                        Player.DistanceTo(current) <= min(sv['honordistance'], 12)):
+                    use_honor_fix = 0 if execute_target_confirmed(current.Serial) else 1
                 else:
+                    Target.Cancel()
                     use_honor_fix = 1
-                # Honor waits for a cursor: take a fresh scan next tick.
-                pause_mage_loop(100)
-                continue
+            else:
+                use_honor_fix = 1
+            pause_mage_loop(100)
+            continue
+
+        if not nether_blast_pending and not nether_blast_ready and sync_mage_pets(nearest):
+            pause_mage_loop(100)
+            continue
 
         # Slayer book: manual requests + auto-swap to match target
         if not nether_blast_pending and not nether_blast_ready:
@@ -4580,7 +5217,8 @@ while not Player.IsGhost:
         process_slayer_swap(None)
 
         # Passive buffs and healing (throttled like combat branch)
-        if Timer.Check('buffcheck') == False or is_under_attack():
+        if (not self_care_needed() and
+                (Timer.Check('buffcheck') == False or is_under_attack())):
             Timer.Create('buffcheck', 750)
             keep_magic_reflect()
             keep_reactive_armor()

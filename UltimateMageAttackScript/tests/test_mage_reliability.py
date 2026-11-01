@@ -43,6 +43,10 @@ class MageReliabilityTests(unittest.TestCase):
         self.ns.update(
             time=self.clock,
             _mage_inventory_until=0.0,
+            _artifact_scan_queue=[], _artifact_move_queue=[],
+            _heirloom_candidate_queue=[], _heirloom_drop_queue=[],
+            _heirloom_drop_state=None, _pending_mage_potion=None,
+            _mirror_release_candidates=[], _last_mage_pet_target=0,
             _mage_combat=False,
             Monitor=Obj(Enter=lambda obj: self.inventory_lock.acquire(),
                         Exit=lambda obj: self.inventory_lock.release()),
@@ -82,7 +86,8 @@ class MageReliabilityTests(unittest.TestCase):
             los_rejected_positions={},
             _timer_create=lambda name, ms: self.timers.update(
                 {name: self.clock.now + ms / 1000.0}),
-            calc_castpause=lambda: 300)
+            calc_castpause=lambda: 300,
+            hostile_within_two=lambda: False)
 
     def cancel_cursor(self):
         self.calls.append('cancel')
@@ -95,6 +100,195 @@ class MageReliabilityTests(unittest.TestCase):
     def target_execute_relative(self, *args):
         self.calls.append(('relative', args))
         self.cursor = False
+
+    def test_reactive_armor_retries_if_buff_never_appears(self):
+        buffs = set()
+        self.ns['sv']['use_reactivearmor'] = 1
+        self.ns['Player'].Mana = 100
+        self.ns['Player'].BuffsExist = lambda name: name in buffs
+        self.ns['Spells'].CastMagery = lambda spell: self.calls.append(spell)
+        self.ns['mana_cost'] = lambda cost: cost
+        self.ns['calc_castspeed'] = lambda ms: ms
+
+        self.ns['keep_reactive_armor']()
+        self.clock.now = 2.0
+        self.ns['keep_reactive_armor']()
+        self.assertEqual(self.calls, ['Reactive Armor'])
+        self.clock.now = 4.1
+        self.ns['keep_reactive_armor']()
+        self.assertEqual(self.calls, ['Reactive Armor', 'Reactive Armor'])
+        buffs.add('Reactive Armor')
+        self.clock.now = 9.0
+        self.ns['keep_reactive_armor']()
+        self.assertEqual(self.calls, ['Reactive Armor', 'Reactive Armor'])
+
+    def test_artifact_moves_are_paced_and_skip_destination_contents(self):
+        backpack = Obj(Serial=1, Container=0, Deleted=False)
+        bag = Obj(Serial=2, Container=1, Deleted=False, Contains=[])
+        nested = Obj(Serial=3, Container=1, Deleted=False, Name='bag', Contains=[])
+        first = Obj(Serial=4, Container=3, Deleted=False, Name="Soul Seeker", Contains=[])
+        second = Obj(Serial=5, Container=1, Deleted=False, Name="Aegis of Grace", Contains=[])
+        already = Obj(Serial=6, Container=2, Deleted=False, Name="Soul Seeker", Contains=[])
+        backpack.Contains = [bag, nested, second]
+        nested.Contains = [first]
+        bag.Contains = [already]
+        objects = {i.Serial: i for i in (backpack, bag, nested, first, second, already)}
+        self.ns['Player'].Backpack = backpack
+        self.ns['Player'].HeadMessage = lambda *args: None
+        self.ns['Items'] = Obj(FindBySerial=objects.get,
+                               Move=lambda item, dest, amount: self.calls.append((item.Serial, dest)),
+                               WaitForProps=lambda *args: None)
+        self.ns.update(sv={'use_move_artis': 1, 'lootbag_serial': 2, 'use_messages': 0},
+                       _artifact_name_cache={}, _artifact_scan_queue=[], _artifact_move_queue=[],
+                       ARTIFACT_NAMES={'soul seeker', 'aegis of grace'})
+        for _ in range(5):
+            self.ns['move_artifacts_to_lootbag']()
+        self.assertEqual(self.calls, [(4, 2)])
+        self.clock.now = 0.61
+        self.ns['move_artifacts_to_lootbag']()
+        self.assertEqual(self.calls, [(4, 2), (5, 2)])
+        self.assertNotIn(6, self.ns['_artifact_name_cache'])
+
+    def test_artifact_scan_does_not_restart_while_queue_is_pending(self):
+        bag = Obj(Serial=2, Container=1, Deleted=False)
+        item = Obj(Serial=3, Container=1, Deleted=False, Name='ordinary')
+        self.ns['Player'].Backpack = Obj(Serial=1)
+        self.ns['Items'] = Obj(FindBySerial={2: bag, 3: item}.get)
+        self.ns.update(sv={'use_move_artis': 1, 'lootbag_serial': 2, 'use_messages': 0},
+                       _artifact_name_cache={}, _artifact_scan_queue=[3, 3], _artifact_move_queue=[],
+                       ARTIFACT_NAMES=set(),
+                       backpack_items_except=lambda *args: self.fail('scan restarted'))
+        self.ns['move_artifacts_to_lootbag']()
+        self.assertEqual(self.ns['_artifact_scan_queue'], [3])
+
+    def test_artifact_gump_persists_bag_and_handles_cancellation(self):
+        ns = load_functions(GUMP)
+        values = {'use_move_artis': 0, 'lootbag_serial': 0}
+        saves = []
+        ns.update(Misc=Obj(ReadSharedValue=lambda key: values.get(key, 0),
+                           SetSharedValue=lambda key, value: values.update({key: value})),
+                  select_artifact_lootbag=lambda: 0,
+                  mark_settings_changed=lambda: None,
+                  save_settings=lambda: saves.append(dict(values)),
+                  sections={'global': {'artifacts': {'sharedvalue': 'use_move_artis'}}})
+        ns['toggle_artifact_lootbag']('use_move_artis')
+        self.assertEqual(saves, [])
+        ns['select_artifact_lootbag'] = lambda: 42
+        ns['toggle_artifact_lootbag']('use_move_artis')
+        self.assertEqual(saves[-1], {'use_move_artis': 1, 'lootbag_serial': 42})
+        self.assertIn('lootbag_serial', ns['get_all_sv_keys']())
+        ns['toggle_artifact_lootbag']('use_move_artis')
+        self.assertEqual(saves[-1]['use_move_artis'], 0)
+
+    def test_protection_penalty_is_applied_after_each_fc_cap(self):
+        protected = [True]
+        self.ns['Player'].BuffsExist = lambda buff: protected[0] and buff == 'Protection'
+        self.ns['serverdelay'] = 150
+        for gear_fc, expected_fc in ((0, -2), (2, 0), (4, 0), (6, 0)):
+            self.ns['_cached_fc'] = gear_fc
+            self.assertEqual(self.ns['calc_castspeed'](2000),
+                             2000 - expected_fc * 250 + 400)
+        for gear_fc, expected_fc in ((0, -2), (2, 0), (4, 2), (6, 2)):
+            self.ns['_cached_fc'] = gear_fc
+            self.assertEqual(self.ns['calc_castspeed_sw'](2000),
+                             2000 - expected_fc * 250 + 400)
+        protected[0] = False
+        self.assertEqual(self.ns['calc_castspeed'](2000), 1900)
+        self.assertEqual(self.ns['calc_castspeed_sw'](2000), 1400)
+
+    def test_honor_selects_nearest_full_health_mob(self):
+        damaged = Obj(Serial=1, Hits=50, HitsMax=100)
+        full = Obj(Serial=2, Hits=100, HitsMax=100)
+        further = Obj(Serial=3, Hits=100, HitsMax=100)
+        self.ns['sv']['honordistance'] = 10
+        self.assertIs(self.ns['honor_candidate']([(damaged, 1), (further, 5), (full, 3)]), full)
+        self.ns['sv']['honordistance'] = 2
+        self.assertIsNone(self.ns['honor_candidate']([(damaged, 1), (full, 3)]))
+
+    def test_heal_potion_confirms_before_cooldown_and_retries(self):
+        potion = Obj(Serial=9, Amount=2, Deleted=False)
+        used = []
+        self.ns.update(sv={'use_mage_heal_potion': 1, 'mage_heal_potion_pct': 20},
+                       Items=Obj(FindByID=lambda *args: potion, FindBySerial=lambda n: potion,
+                                 UseItem=lambda item: used.append(item.Serial)))
+        self.ns['Player'].Hits = 10
+        self.ns['Player'].HitsMax = 100
+        self.ns['Player'].Backpack = Obj(Serial=1)
+        self.assertTrue(self.ns['manage_mage_potions']())
+        self.assertFalse(self.ns['Timer'].Check('mage_potion_cooldown'))
+        self.clock.now = 3.1
+        self.assertTrue(self.ns['manage_mage_potions']())
+        potion.Amount = 1
+        self.ns['manage_mage_potions']()
+        self.assertTrue(self.ns['Timer'].Check('mage_potion_cooldown'))
+        self.assertEqual(used, [9, 9])
+
+    def test_pet_sync_tracks_only_confirmed_cursor_target(self):
+        target = Obj(Serial=7, Deleted=False, Hits=100, HitsMax=100)
+        self.ns.update(sv={'use_mage_pet_sync': 1, 'activeattack': 1, 'attackrange': 12},
+                       Mobiles=Obj(FindBySerial=lambda serial: target),
+                       external_target_reserved=lambda: False)
+        self.ns['Player'].Followers = 1
+        self.ns['Player'].BuffsExist = lambda name: False
+        self.ns['Player'].DistanceTo = lambda mob: 3
+        self.ns['Player'].ChatSay = lambda text: self.calls.append(text)
+        self.assertTrue(self.ns['sync_mage_pets'](target))
+        self.assertEqual(self.ns['_last_mage_pet_target'], 0)
+        self.cursor = True
+        self.assertTrue(self.ns['execute_pending_target']())
+        self.assertEqual(self.ns['_last_mage_pet_target'], 7)
+        self.assertFalse(self.ns['sync_mage_pets'](target))
+
+    def test_heirloom_drop_checks_name_and_confirms_move(self):
+        decoy = Obj(Serial=2, ItemID=0x2811, Hue=0, Name='ordinary chest', Container=99, Deleted=False)
+        chest = Obj(Serial=3, ItemID=0x2811, Hue=0, Name='Chest of Heirlooms', Container=99, Deleted=False)
+        self.ns.update(sv={'use_drop_heirlooms': 1, 'use_messages': 0},
+                       HEIRLOOM_CHEST_ID=0x2811, HEIRLOOM_CHEST_HUE=0,
+                       HEIRLOOM_CHEST_NAME='chest of heirlooms', HEIRLOOM_DROP_OFFSETS=((0, 0),),
+                       _artifact_name_cache={},
+                       Items=Obj(FindBySerial={2: decoy, 3: chest}.get,
+                                 MoveOnGround=lambda item, *args: self.calls.append(item.Serial)),
+                       backpack_items_except=lambda *args: [decoy, chest],
+                       item_is_in_backpack=lambda item: item is not None and item.Container == 99)
+        self.ns['Player'].Backpack = Obj(Serial=99)
+        self.ns['Player'].Position = Obj(X=1, Y=2, Z=0)
+        self.ns['Player'].HeadMessage = lambda *args: None
+        self.assertFalse(self.ns['drop_heirloom_chests']())
+        self.assertTrue(self.ns['drop_heirloom_chests']())
+        self.assertEqual(self.calls, [3])
+        chest.Container = 0
+        self.clock.now = 0.61
+        self.ns['drop_heirloom_chests']()
+        self.assertIsNone(self.ns['_heirloom_drop_state'])
+
+    def test_mirror_release_uses_release_context_only(self):
+        mirror = Obj(Serial=2, Deleted=False, Name='Hero', MobileID=1)
+        self.ns.update(sv={'use_mage_release_mirror': 1, 'attackrange': 12, 'use_messages': 0},
+                       Player=Obj(Serial=1, Name='Hero', MobileID=1, Followers=4),
+                       Mobiles=Obj(Filter=lambda: Obj(), ApplyFilter=lambda f: [mirror],
+                                   FindBySerial=lambda serial: mirror),
+                       Misc=Obj(WaitForContext=lambda serial, ms: [Obj(Entry='Release', Response=7)],
+                                ContextReply=lambda serial, response: self.calls.append((serial, response))))
+        self.ns['release_one_mirror_image'](False)
+        self.assertEqual(self.calls, [])
+        self.ns['release_one_mirror_image'](True)
+        self.assertEqual(self.calls, [(2, 7)])
+
+    def test_ignore_buttons_persist_and_toggle_specific_serial(self):
+        ns = load_functions(GUMP)
+        values = {'mage_ignored_serials': '[]'}
+        saved = []
+        ns.update(Misc=Obj(ReadSharedValue=lambda key: values.get(key),
+                           SetSharedValue=lambda key, val: values.update({key: val})),
+                  Mobiles=Obj(FindBySerial=lambda serial: Obj(Serial=serial, Name='mob')),
+                  Player=Obj(Serial=1, HeadMessage=lambda *args: None),
+                  prompt_target=lambda message: 42, json=json,
+                  mark_settings_changed=lambda: None,
+                  save_settings=lambda: saved.append(values['mage_ignored_serials']))
+        ns['ignore_mage_target']()
+        self.assertEqual(json.loads(saved[-1]), [42])
+        ns['unignore_mage_target']()
+        self.assertEqual(json.loads(saved[-1]), [])
 
     def test_watchdog_tracks_each_cast_lifecycle(self):
         recovered = []
@@ -246,7 +440,7 @@ class MageReliabilityTests(unittest.TestCase):
             guardme_fey=0, guardme_fiend=0, guardme_pending=False,
             Player=Obj(
                 Followers=5 - free_slots, FollowersMax=5, Mana=100,
-                Paralized=False, Serial=1,
+                Paralized=False, Mount=None, Serial=1,
                 Position=Obj(X=10, Y=20, Z=0),
                 HeadMessage=lambda *args: None),
             skill_value=lambda name: 100,
@@ -268,6 +462,162 @@ class MageReliabilityTests(unittest.TestCase):
 
         self.assertTrue(self.ns['manage_summons'](True))
         self.assertIn(('cast', 'Rising Colossus'), self.calls)
+
+    def test_fey_fiend_and_colossus_issue_guard_after_summoning(self):
+        for kind in ('fey', 'fiend', 'colossus'):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.configure_summons(free_slots=3)
+                self.ns['sv'].update(use_risingcolossus=int(kind == 'colossus'),
+                                     use_summonfey=int(kind == 'fey'),
+                                     use_summonfiend=int(kind == 'fiend'),
+                                     fey_threshold=3, use_summon_counter=0,
+                                     summon_require_empowerment=0)
+                self.ns['calc_castspeed_sw'] = lambda ms: ms
+                self.ns['Player'].ChatSay = lambda text: self.calls.append(('say', text))
+                self.ns['Spells'].CastSpellweaving = lambda name: self.calls.append(('cast', name))
+                self.assertTrue(self.ns['manage_summons'](True))
+                self.assertTrue(self.ns['guardme_pending'])
+                self.ns['say_guardme_if_pending']()
+                self.assertNotIn(('say', 'all guard me'), self.calls)
+                self.ns['Player'].Followers = 3
+                self.clock.now = 10
+                self.ns['say_guardme_if_pending']()
+                self.assertEqual(self.calls.count(('say', 'all guard me')), 1)
+                self.ns['say_guardme_if_pending']()
+                self.assertEqual(self.calls.count(('say', 'all guard me')), 1)
+
+    def test_summon_empowerment_requirement_can_be_disabled(self):
+        self.configure_summons(free_slots=3)
+        self.ns['sv']['summon_require_empowerment'] = 1
+        self.ns['arcane_empowerment'] = lambda: False
+        self.assertTrue(self.ns['manage_summons'](False))
+        self.assertNotIn(('cast', 'Rising Colossus'), self.calls)
+        self.ns['sv']['summon_require_empowerment'] = 0
+        self.assertTrue(self.ns['manage_summons'](False))
+        self.assertIn(('cast', 'Rising Colossus'), self.calls)
+
+    def test_natures_fury_summon_checks_slots_mana_and_retry(self):
+        self.configure_summons(free_slots=1)
+        self.ns['sv'].update(use_risingcolossus=0, use_natures_fury=1,
+                             summon_require_empowerment=0)
+        self.ns['Spells'].CastSpellweaving = lambda name: self.calls.append(('cast', name))
+        self.assertFalse(self.ns['summon_demand'](False))
+        self.assertFalse(self.ns['manage_summons'](False))
+        self.assertEqual(self.calls, [])
+        self.ns['Player'].Mana = 23
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.ns['Player'].Mana = 24
+        self.assertTrue(self.ns['manage_summons'](True))
+        self.assertEqual(self.calls, [('cast', 'Natures Fury')])
+        self.clock.now = 1.0
+        self.assertFalse(self.ns['summon_demand'](True))
+        self.ns['Player'].Followers = self.ns['Player'].FollowersMax
+        self.clock.now = 4.0
+        self.assertFalse(self.ns['summon_demand'](True))
+        self.ns['Player'].Followers -= 1
+        self.assertTrue(self.ns['summon_demand'](True))
+        self.assertFalse(self.ns['summon_demand'](False))
+        self.ns['sv']['use_natures_fury'] = 0
+        self.assertFalse(self.ns['summon_demand'](True))
+
+    def test_mirror_image_checks_danger_slots_skill_mana_and_mount(self):
+        self.configure_summons(free_slots=1)
+        self.ns['sv'].update(use_risingcolossus=0, use_mirror_image=1,
+                             summon_require_empowerment=0)
+        skills = {'Ninjitsu': 20}
+        self.ns['skill_value'] = lambda name: skills.get(name, 100)
+        self.ns['calc_castspeed'] = lambda value: value
+        self.ns['Spells'].CastNinjitsu = lambda name: self.calls.append(('cast', name))
+        self.assertFalse(self.ns['manage_summons'](False))
+        self.ns['Player'].Mount = Obj()
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.ns['Player'].Mount = None
+        skills['Ninjitsu'] = 19
+        self.assertFalse(self.ns['manage_summons'](True))
+        skills['Ninjitsu'] = 20
+        self.ns['Player'].Mana = 9
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.ns['Player'].Mana = 100
+        self.ns['Player'].Followers = self.ns['Player'].FollowersMax
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.ns['Player'].Followers -= 1
+        self.assertTrue(self.ns['manage_summons'](True))
+        self.assertEqual(self.calls, [('cast', 'Mirror Image')])
+        self.clock.now = 2.0
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.clock.now = 5.1
+        self.assertTrue(self.ns['manage_summons'](True))
+        self.assertEqual(self.calls.count(('cast', 'Mirror Image')), 2)
+
+    def test_animate_dead_requires_corpse_and_tracks_target(self):
+        self.configure_summons(free_slots=0)
+        self.ns['sv'].update(use_risingcolossus=0, use_animate_dead=1,
+                             summon_require_empowerment=0)
+        self.ns.update(_animate_dead_corpses=[], _animate_dead_seen={})
+        self.ns['Player'].DistanceTo = lambda serial: {101: 10, 102: 11}[serial]
+        corpses = {}
+        scans = []
+        self.ns['Items'] = Obj(Filter=lambda: Obj(),
+                               ApplyFilter=lambda fil: scans.append(fil) or list(corpses.values()),
+                               FindBySerial=lambda serial: corpses.get(serial))
+        self.ns['Spells'].CastNecro = lambda name: self.calls.append(('cast', name))
+        def target_cast(start, delay, kind, target, *args):
+            self.ns['pending_target_cursor'] = {'kind': kind, 'target': target}
+            self.cursor = True
+            return self.ns['execute_pending_target']()
+        self.ns['wait_for_spell_target'] = target_cast
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.assertEqual(scans[0].RangeMax, 10)
+        self.assertEqual(scans[0].IsCorpse, 1)
+        self.clock.now = 1.1
+        corpses[102] = Obj(Serial=102, ItemID=0x2006, Deleted=False,
+                           Visible=True, OnGround=True, IsCorpse=True)
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.clock.now = 2.2
+        corpses[101] = Obj(Serial=101, ItemID=0x2006, Deleted=False,
+                           Visible=True, OnGround=True, IsCorpse=True)
+        self.assertFalse(self.ns['manage_summons'](False))
+        self.assertNotIn(('cast', 'Animate Dead'), self.calls)
+        self.assertTrue(self.ns['manage_summons'](True))
+        self.assertIn(('cast', 'Animate Dead'), self.calls)
+        self.assertIn(('target', (101,)), self.calls)
+        self.assertIn(101, self.ns['_animate_dead_seen'])
+        self.clock.now = 13
+        self.assertFalse(self.ns['manage_summons'](True))
+        self.assertEqual(self.calls.count(('cast', 'Animate Dead')), 1)
+
+    def test_animate_dead_late_cursor_revalidates_corpse(self):
+        self.configure_summons()
+        self.ns['sv']['use_animate_dead'] = 1
+        corpse = Obj(Serial=101, ItemID=0x2006, Deleted=False,
+                     Visible=True, OnGround=True, IsCorpse=True)
+        self.ns.update(_animate_dead_seen={},
+                       Items=Obj(FindBySerial=lambda serial: corpse),
+                       pending_target_cursor={'kind': 'animate_dead', 'target': 101})
+        self.ns['Player'].DistanceTo = lambda serial: 11
+        self.cursor = True
+        self.assertFalse(self.ns['execute_pending_target']())
+        self.assertIn('cancel', self.calls)
+        self.assertNotIn(101, self.ns['_animate_dead_seen'])
+        self.calls.clear()
+        self.ns['Player'].DistanceTo = lambda serial: 10
+        self.ns['pending_target_cursor'] = {'kind': 'animate_dead', 'target': 101}
+        self.cursor = True
+        self.assertTrue(self.ns['execute_pending_target']())
+        self.assertIn(('target', (101,)), self.calls)
+        self.assertIn(101, self.ns['_animate_dead_seen'])
+
+    def test_animate_dead_disabled_or_low_mana_does_not_scan(self):
+        self.configure_summons(free_slots=0)
+        self.ns['sv']['use_risingcolossus'] = 0
+        self.ns['_animate_dead_corpses'] = []
+        self.ns['_animate_dead_seen'] = {}
+        self.ns['Items'] = Obj(Filter=lambda: self.fail('should not scan'))
+        self.assertFalse(self.ns['manage_summons'](False))
+        self.ns['sv']['use_animate_dead'] = 1
+        self.ns['Player'].Mana = 22
+        self.assertFalse(self.ns['manage_summons'](True))
 
     def test_animated_weapon_respects_slots_and_cast_confirmation(self):
         self.configure_summons(free_slots=2)
@@ -316,8 +666,160 @@ class MageReliabilityTests(unittest.TestCase):
         self.calls.clear()
         self.timers.clear()
         skills['Magery'] = 0
+        self.assertFalse(self.ns['auto_heal']())
+        self.assertEqual(self.calls, [])
+        skills['Magery'] = 0.1
         self.assertTrue(self.ns['auto_heal']())
         self.assertEqual(self.calls, ['Heal'])
+
+    def test_no_magery_uses_cleansing_winds_at_threshold(self):
+        skills = {'Mysticism': 100, 'Magery': 0}
+        self.ns.update(
+            sv={'use_heal': 1, 'use_cure': 1, 'use_cleansingwinds': 1, 'use_messages': 0,
+                'heal_threshold': 90},
+            Player=Obj(Hits=80, HitsMax=100, Mana=100, Paralized=False,
+                       Poisoned=False, Serial=1),
+            skill_value=lambda name: skills[name], mana_cost=lambda base: base,
+            wait_for_spell_target=lambda *args: True,
+            did_fizzle=lambda start: False,
+            Spells=Obj(CastMysticism=lambda name: self.calls.append(name),
+                       CastMagery=lambda name: self.calls.append(name)))
+        self.assertTrue(self.ns['auto_heal']())
+        self.assertEqual(self.calls, ['Cleansing Winds'])
+        self.calls.clear()
+        self.timers.clear()
+        self.ns['Player'].Poisoned = True
+        self.assertTrue(self.ns['auto_cure']())
+        self.assertEqual(self.calls, ['Cleansing Winds'])
+        self.calls.clear()
+        self.timers.clear()
+        self.ns['sv']['use_cleansingwinds'] = 0
+        self.assertFalse(self.ns['auto_cure']())
+        self.assertEqual(self.calls, [])
+
+    def test_spirit_speak_healing_is_optional_and_independent(self):
+        self.ns.update(
+            sv={'use_heal': 0, 'use_spirit_speak_heal': 1,
+                'use_messages': 0, 'heal_threshold': 90},
+            Player=Obj(Hits=80, HitsMax=100, Mana=0, Paralized=False,
+                       Poisoned=False, UseSkill=lambda skill: self.calls.append(skill)))
+        self.assertTrue(self.ns['auto_heal']())
+        self.assertEqual(self.calls, ['Spirit Speak'])
+        self.assertTrue(self.ns['auto_heal']())
+        self.clock.now = 1.3
+        self.assertFalse(self.ns['auto_heal']())
+        self.clock.now = 5.1
+        self.ns['Player'].Poisoned = True
+        self.assertFalse(self.ns['auto_heal']())
+        self.ns['Player'].Poisoned = False
+        self.ns['Player'].Hits = 100
+        self.assertFalse(self.ns['auto_heal']())
+        self.ns['Player'].Hits = 80
+        self.cursor = True
+        self.assertFalse(self.ns['auto_heal']())
+        self.cursor = False
+        self.ns['sv']['use_spirit_speak_heal'] = 0
+        self.assertFalse(self.ns['auto_heal']())
+        self.assertEqual(self.calls, ['Spirit Speak'])
+
+    def test_spirit_speak_completes_before_cleansing_winds_if_needed(self):
+        self.ns.update(
+            sv={'use_heal': 0, 'use_spirit_speak_heal': 1,
+                'use_cleansingwinds': 1, 'use_messages': 0, 'heal_threshold': 90},
+            Player=Obj(Hits=70, HitsMax=100, Mana=100, Paralized=False,
+                       Poisoned=False, Serial=1,
+                       UseSkill=lambda name: self.calls.append(name)),
+            skill_value=lambda name: 100, mana_cost=lambda base: base,
+            wait_for_spell_target=lambda *args: True, did_fizzle=lambda start: False,
+            Spells=Obj(CastMysticism=lambda name: self.calls.append(name),
+                       CastMagery=lambda name: self.calls.append(name)))
+        self.assertTrue(self.ns['auto_heal']())
+        self.clock.now = 1.0
+        self.assertTrue(self.ns['auto_heal']())
+        self.assertEqual(self.calls, ['Spirit Speak'])
+        self.clock.now = 1.3
+        self.assertTrue(self.ns['auto_heal']())
+        self.assertEqual(self.calls, ['Spirit Speak', 'Cleansing Winds'])
+        self.calls.clear()
+        self.timers.clear()
+        self.ns['Timer'].Create('spirit_speak_heal', 5000)
+        self.ns['Player'].Mana = 10
+        self.assertFalse(self.ns['auto_heal']())
+        self.assertEqual(self.calls, [])
+
+    def test_spirit_speak_healed_above_threshold_skips_cleansing_winds(self):
+        self.ns.update(
+            sv={'use_heal': 1, 'use_spirit_speak_heal': 1,
+                'use_cleansingwinds': 1, 'use_messages': 0, 'heal_threshold': 90},
+            Player=Obj(Hits=85, HitsMax=100, Mana=100, Paralized=False,
+                       Poisoned=False, UseSkill=lambda name: self.calls.append(name)))
+        self.assertTrue(self.ns['auto_heal']())
+        self.ns['Player'].Hits = 95
+        self.clock.now = 1.3
+        self.assertFalse(self.ns['auto_heal']())
+        self.assertEqual(self.calls, ['Spirit Speak'])
+
+    def test_apple_consumption_is_confirmed_before_cooldown(self):
+        apple = Obj(Serial=12, Amount=2, Deleted=False)
+        self.ns.update(_pending_mage_apple=None,
+                       sv={'use_enchanted_apple': 1, 'use_messages': 0},
+                       Player=Obj(Backpack=Obj(Serial=1),
+                                  BuffsExist=lambda name: name == 'Bload Oath (curse)'),
+                       Items=Obj(FindByID=lambda *args: apple,
+                                 FindBySerial=lambda serial: apple,
+                                 UseItem=lambda item: self.calls.append(item.Serial)))
+        self.assertTrue(self.ns['manage_enchanted_apple']())
+        self.assertEqual(self.calls, [12])
+        self.assertFalse(self.ns['manage_enchanted_apple']())
+        self.assertNotIn('mage_apple_cooldown', self.timers)
+        apple.Amount = 1
+        self.assertFalse(self.ns['manage_enchanted_apple']())
+        self.assertTrue(self.ns['Timer'].Check('mage_apple_cooldown'))
+
+    def test_apple_rejection_retries_and_disabled_never_uses(self):
+        apple = Obj(Serial=12, Amount=2, Deleted=False)
+        self.ns.update(_pending_mage_apple=None,
+                       sv={'use_enchanted_apple': 1, 'use_messages': 0},
+                       Player=Obj(Backpack=Obj(Serial=1), BuffsExist=lambda name: True),
+                       Items=Obj(FindByID=lambda *args: apple,
+                                 FindBySerial=lambda serial: apple,
+                                 UseItem=lambda item: self.calls.append(item.Serial)))
+        self.assertTrue(self.ns['manage_enchanted_apple']())
+        self.clock.now = 1.1
+        self.assertFalse(self.ns['manage_enchanted_apple']())
+        self.assertNotIn('mage_apple_cooldown', self.timers)
+        self.clock.now = 3.1
+        self.assertTrue(self.ns['manage_enchanted_apple']())
+        self.ns['sv']['use_enchanted_apple'] = 0
+        self.clock.now = 6.2
+        self.assertFalse(self.ns['manage_enchanted_apple']())
+        self.assertEqual(self.calls, [12, 12])
+
+    def test_orange_petals_use_exact_hue_and_follow_buff(self):
+        petal = Obj(Serial=21, Amount=2)
+        active = {'value': False}
+        def find_item(*args):
+            self.calls.append(('find', args))
+            return petal
+        self.ns.update(sv={'use_orange_petals': 1, 'use_messages': 0},
+                       Player=Obj(Backpack=Obj(Serial=1),
+                                  BuffsExist=lambda name: active['value']),
+                       Items=Obj(FindByID=find_item,
+                                 UseItem=lambda item: self.calls.append(('use', item.Serial))))
+        self.assertTrue(self.ns['manage_orange_petals']())
+        self.assertEqual(self.calls[0][1][:2], (0x1021, 0x002B))
+        self.assertFalse(self.ns['manage_orange_petals']())
+        self.clock.now = 3.1
+        active['value'] = True
+        self.assertFalse(self.ns['manage_orange_petals']())
+        active['value'] = False
+        self.cursor = True
+        self.assertFalse(self.ns['manage_orange_petals']())
+        self.cursor = False
+        self.assertTrue(self.ns['manage_orange_petals']())
+        self.ns['sv']['use_orange_petals'] = 0
+        self.clock.now = 7
+        self.assertFalse(self.ns['manage_orange_petals']())
 
     def test_emergency_cure_priority_respects_skills(self):
         skills = {'Magery': 100, 'Mysticism': 100}
@@ -340,6 +842,87 @@ class MageReliabilityTests(unittest.TestCase):
         skills['Magery'] = 0
         self.assertTrue(self.ns['auto_cure']())
         self.assertEqual(self.calls, ['Cleansing Winds'])
+
+    def test_cleansing_winds_blocked_in_all_care_paths(self):
+        pet = Obj(Poisoned=True, Hits=20, HitsMax=100, Name='pet', Serial=3)
+        self.ns.update(
+            sv={'use_heal': 1, 'use_cure': 1, 'use_cleansingwinds': 1,
+                'use_messages': 0, 'heal_threshold': 90,
+                'use_auto_heal_pet': 1, 'use_auto_cure_pet': 1,
+                'pet_heal_option': 3, 'pet_hp_threshold': 90},
+            Player=Obj(Hits=40, HitsMax=100, Mana=100, Paralized=False,
+                       Poisoned=False, Serial=1, Pets=[pet],
+                       BuffsExist=lambda name: True),
+            skill_value=lambda name: {'Mysticism': 100, 'Magery': 0}[name],
+            mana_cost=lambda base: base,
+            hostile_within_two=lambda: True,
+            Spells=Obj(CastMysticism=lambda name: self.calls.append(name)))
+        self.assertFalse(self.ns['auto_heal']())
+        self.ns['Player'].Poisoned = True
+        self.assertFalse(self.ns['auto_cure']())
+        self.ns['Player'].Poisoned = False
+        self.assertFalse(self.ns['cleansing_winds']())
+        self.ns['heal_pets']()
+        self.ns['cure_pets']()
+        self.assertEqual(self.calls, [])
+
+    def test_close_hostile_filter_uses_two_tiles(self):
+        helper = load_functions()['hostile_within_two']
+        class FakeList:
+            def __getitem__(self, key):
+                return list
+        f = Obj()
+        nearby = []
+        helper.__globals__.update(Mobiles=Obj(Filter=lambda: f,
+                                             ApplyFilter=lambda fil: nearby),
+                                  List=FakeList(), Byte=int, sv={})
+        self.assertFalse(helper())
+        self.assertEqual(f.RangeMax, 2)
+        self.assertFalse(f.CheckIgnoreObject)
+        nearby.append(Obj())
+        self.assertTrue(helper())
+
+    def test_strangle_tracks_actual_mob_until_near_end(self):
+        first, second = Obj(Serial=10), Obj(Serial=20)
+        self.ns.update(
+            sv={key: 0 for key in ('use_messages', 'use_command_undead',
+                'use_conduit', 'use_evil_omen', 'use_curse', 'use_corpse_skin',
+                'use_strangle', 'use_mind_rot', 'use_poison', 'use_paralyze',
+                'use_sleep', 'use_mass_sleep', 'use_mana_vampire')},
+            Player=Obj(Paralized=False, Poisoned=False, Mana=100),
+            debuff_expiry={}, last_debuff_target=0, nuke_cascade_until=0,
+            get_mob_tier=lambda mob: 'boss', low_mana=lambda: False,
+            skill_value=lambda name: 100, mana_cost=lambda base: base,
+            Mobiles=Obj(FindBySerial=lambda serial: first if serial == 10 else second),
+            target_current_visible_hostile=lambda preferred: preferred,
+            Spells=Obj(CastNecro=lambda name: self.calls.append(name)),
+            did_fizzle=lambda start: False)
+        self.ns['sv']['use_strangle'] = 1
+        def target_cast(start, delay, kind, target, *args):
+            self.ns['pending_target_cursor'] = {'kind': kind, 'target': target.Serial}
+            self.cursor = True
+            return self.ns['execute_pending_target']()
+        self.ns['wait_for_spell_target'] = target_cast
+        self.assertEqual(self.ns['strangle_duration_ms'](), 32000)
+        self.assertTrue(self.ns['apply_debuffs'](first))
+        self.clock.now = 1
+        self.assertFalse(self.ns['apply_debuffs'](first))
+        self.assertTrue(self.ns['apply_debuffs'](second))
+        self.clock.now = 31
+        self.assertFalse(self.ns['apply_debuffs'](first))
+        self.clock.now = 32
+        self.assertTrue(self.ns['apply_debuffs'](first))
+        self.assertEqual(self.calls, ['Strangle', 'Strangle', 'Strangle'])
+
+    def test_late_strangle_cursor_tracks_actual_target(self):
+        self.ns.update(debuff_expiry={}, skill_value=lambda name: 100,
+                       pending_target_cursor={'kind': 'strangle', 'target': 10},
+                       Mobiles=Obj(FindBySerial=lambda serial: Obj(Serial=serial)),
+                       target_current_visible_hostile=lambda preferred: Obj(Serial=20))
+        self.cursor = True
+        self.assertTrue(self.ns['execute_pending_target']())
+        self.assertIn((20, 'debuff_strangle'), self.ns['debuff_expiry'])
+        self.assertNotIn((10, 'debuff_strangle'), self.ns['debuff_expiry'])
 
     def test_book_scans_only_for_enabled_auto_swap(self):
         reads = {'slayer_swap_request': 123}
@@ -439,12 +1022,13 @@ class MageReliabilityTests(unittest.TestCase):
         self.victims = victims
         self.ns.update(
             nether_followup_pending=False,
+            _pending_mage_apple=None,
             sv={'attackrange': 12, 'activeattack': 1,
                 'attack_blue_changelings': 0, 'use_distancemarker': 0,
                 'use_honor': 0, 'honordistance': 10, 'use_messages': 0,
                 'use_nether_blast': 0, 'mass_threshold': 4, 'multi_threshold': 2},
-            Player=Obj(Paralized=False, DistanceTo=lambda mob: 4,
-                       BuffsExist=lambda name: True),
+            Player=Obj(Paralized=False, Poisoned=False, Hits=100, HitsMax=100,
+                       DistanceTo=lambda mob: 4, BuffsExist=lambda name: True),
             Mobiles=Obj(FindBySerial=lambda serial: next(
                 (m for m in self.victims if m.Serial == serial), None)),
             mobs_list=lambda rng: self.calls.append('scan') or self.victims,
@@ -470,6 +1054,33 @@ class MageReliabilityTests(unittest.TestCase):
                 'pet_gift_of_life', 'pet_gift_of_renewal', 'bless_pets'):
             self.ns[name] = lambda name=name: self.calls.append(name)
 
+    def test_artifact_mover_runs_only_when_safe_and_without_cursor(self):
+        self.configure_combat([Obj(Serial=1)])
+        self.ns['move_artifacts_to_lootbag'] = lambda: self.calls.append('move')
+        exec(self.combat_tick, self.ns)
+        self.assertNotIn('move', self.calls)
+        self.victims = []
+        self.cursor = True
+        exec(self.combat_tick, self.ns)
+        self.assertNotIn('move', self.calls)
+        self.cursor = False
+        exec(self.combat_tick, self.ns)
+        self.assertIn('move', self.calls)
+
+    def test_honor_targets_full_health_candidate_in_combat(self):
+        damaged = Obj(Serial=1, Hits=40, HitsMax=100)
+        healthy = Obj(Serial=2, Hits=100, HitsMax=100)
+        self.configure_combat([damaged, healthy])
+        self.ns['sv']['use_honor'] = 1
+        self.ns['Player'].DistanceTo = lambda mob: 2 if mob.Serial == 1 else 4
+        self.ns['Player'].BuffsExist = lambda name: False
+        self.ns['Player'].InvokeVirtue = lambda name: self.calls.append('honor')
+        self.ns['wait_for_target_responsive'] = lambda *args: True
+        self.ns['execute_target_confirmed'] = lambda serial: self.calls.append(('honor_target', serial)) or True
+        exec(self.combat_tick, self.ns)
+        self.assertIn(('honor_target', 2), self.calls)
+        self.assertNotIn(('honor_target', 1), self.calls)
+
     def test_combat_defers_routine_buffs_and_scans_once(self):
         self.configure_combat([Obj(Serial=1)])
         exec(self.combat_tick, self.ns)
@@ -488,6 +1099,32 @@ class MageReliabilityTests(unittest.TestCase):
         self.assertIn('reflect', self.calls)
         self.assertNotIn('arcane_empowerment', self.calls)
         self.assertNotIn(('attack', 1), self.calls)
+
+    def test_low_health_skips_defensive_buffs_and_summons(self):
+        self.configure_combat([Obj(Serial=1)])
+        self.ns['Player'].Hits = 10
+        self.ns['is_under_attack'] = lambda: True
+        self.ns['manage_summons'] = lambda danger: self.calls.append('summon') or True
+        self.ns['manage_reaper'] = lambda target: self.calls.append('reaper') or True
+        exec(self.combat_tick, self.ns)
+        self.assertNotIn('summon', self.calls)
+        self.assertNotIn('reaper', self.calls)
+        self.assertNotIn('keep_reactive_armor', self.calls)
+        self.assertNotIn('keep_magic_reflect', self.calls)
+        self.assertIn(('attack', 1), self.calls)
+
+    def test_low_health_or_poison_skips_idle_buffs(self):
+        self.configure_combat([])
+        self.ns['Player'].Hits = 10
+        exec(self.combat_tick, self.ns)
+        self.assertNotIn('keep_reactive_armor', self.calls)
+        self.assertNotIn('arcane_empowerment', self.calls)
+        self.calls.clear()
+        self.ns['Player'].Hits = 100
+        self.ns['Player'].Poisoned = True
+        exec(self.combat_tick, self.ns)
+        self.assertNotIn('keep_reactive_armor', self.calls)
+        self.assertNotIn('arcane_empowerment', self.calls)
 
     def test_honor_wait_restarts_before_attack_and_refreshes_next_tick(self):
         self.configure_combat([Obj(Serial=1, Hits=100, HitsMax=100)])

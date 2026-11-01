@@ -206,6 +206,7 @@ class MageLighthouseTests(unittest.TestCase):
                 self.setUp()
                 item = self.item()
                 player = self.ns['Player']
+                player.Hits, player.HitsMax = 100, 100
                 self.world.configure_combat(hostiles)
                 self.ns['Player'] = player
                 self.ns['sv']['use_attack_lighthouses'] = 1

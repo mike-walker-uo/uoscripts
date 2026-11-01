@@ -6,6 +6,8 @@ An all-in-one Razor Enhanced combat script for Mage, Mystic, Necromancer, Spellw
 
 Version history: [CHANGELOG.md](CHANGELOG.md)
 
+The GUMP groups controls into Main, Heal, Spells, Summon, Skills and Slayer tabs.
+
 ![Gump Script options](magescriptgump.png "Gump Script Options")
 
 ## Requirements
@@ -109,9 +111,9 @@ Ground markers use client-only packets through Razor Enhanced's `PacketLogger`; 
 
 ## Summons
 
-Supported summons include Animated Weapon, Rising Colossus, Summon Creature, elemental summons, Summon Daemon, Blade Spirits, Energy Vortex, Summon Fey, Summon Fiend and Summon Reaper.
+Supported summons include Animated Weapon, Rising Colossus, Animate Dead, Mirror Image, Nature's Fury, Summon Creature, elemental summons, Summon Daemon, Blade Spirits, Energy Vortex, Summon Fey, Summon Fiend and Summon Reaper.
 
-- While safe, regular summons wait for Arcane Empowerment.
+- While safe, regular summons wait for Arcane Empowerment when `RequireArcaneEmpowerment` is enabled; this requirement can be disabled.
 - When hostile mobiles are nearby, summons bypass that wait so defense is not delayed.
 - Animated Weapon requires 33 Mysticism and four free follower slots, or two on UOAlive with at least 100 Magery, Mysticism and Spellweaving.
 - Rising Colossus requires three free follower slots on UOAlive.
@@ -133,14 +135,19 @@ The Slayer Books section scans equipped items and the backpack for Magery, Necro
 
 ## Healing, curing and buffs
 
-- Player healing starts as soon as cast interruption is confirmed after damage.
-- Emergency poison handling uses Magery Cure first, then Arch Cure, then Cleansing Winds when available.
-- Cleansing Winds can also remove configured harmful debuffs.
+- Optional Spirit Speak healing is attempted first when ready; Cleansing Winds can follow when enabled.
+- Optional emergency heal and cure potions, enchanted apples for Blood Oath, and orange petals are available.
+- Magery healing and curing require Magery. Cleansing Winds can heal, cure and remove debuffs, but is suppressed while a hostile is within two tiles, including for pet care.
+- Healing and curing take priority over routine buffs and summons; actual healing still depends on server responses and available options.
 - Optional defensive maintenance includes Magic Reflect, Reactive Armor, Protection, Bless, Attune Weapon, Gift of Life, Gift of Renewal, Arcane Empowerment and mastery buffs.
 - Supported forms include Reaper Form, Wraith Form, Lich Form, Vampiric Embrace and Stone Form.
 - Gift of Renewal uses a 180-second retry interval for both player and pet handling.
 - Pet support includes bandages, Magery healing, Cleansing Winds, Bless, Gift of Life and Gift of Renewal.
 - Razor Enhanced's Bandage Agent and currently selected Dress list can be maintained from GUMP options.
+
+## Inventory and targeting options
+
+Optional artifact sorting moves named items into a selected backpack bag outside combat. Optional heirloom drops also run outside combat. The GUMP can ignore or unignore a specific mobile per character. Honor selects the nearest eligible full-health mobile within range, and optional Pet Sync sends followers to the current target.
 
 ## Bard and Tamer support
 
